@@ -157,8 +157,10 @@ export function TransferProvider({ children }: { children: React.ReactNode }) {
       "camera-frame", "camera-stop", "location-update", "location-stop",
       "audio-chunk", "clipboard-sync", "device-control", "device-info",
       "battery-update", "brightness-update", "typing-indicator",
-      "sensor-data", "wb-stroke", "wb-clear", "wb-undo",
+      "sensor-data", "sensor-log-entry", "wb-stroke", "wb-clear", "wb-undo",
       "tts-speak", "network-info", "contacts-share",
+      "macro-trigger", "screenshot-request", "screenshot-response",
+      "webrtc-offer", "webrtc-answer", "webrtc-ice", "webrtc-hangup",
     ];
 
     for (const event of relayEvents) {

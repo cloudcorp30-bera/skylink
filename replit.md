@@ -4,24 +4,31 @@
 
 pnpm workspace monorepo using TypeScript. SkyLink is a peer-to-peer mobile app for real-time device control and communication.
 
-### SkyLink Features (13 tabs)
+### SkyLink Features (18 tabs)
 - **Chat** — Real-time messaging with Socket.IO relay
 - **Voice** — Push-to-talk walkie-talkie (expo-av, 1.2s audio chunks streamed as base64)
-- **Files** — Chunked file transfer (64KB chunks, base64, progress tracking)
+- **Call** — P2P WebRTC audio/video call (react-native-webrtc, STUN/ICE, no relay for media)
+- **Send** — Chunked file transfer (64KB chunks, base64, progress tracking)
+- **Browse** — File browser: SkyLink cache + received files, share/delete/send to peer
 - **Camera** — Live JPEG frame streaming from device camera
-- **Board** — Collaborative whiteboard with react-native-svg + gesture-handler, undo/clear/multi-color
+- **Board** — Collaborative whiteboard (react-native-svg + gesture-handler, undo/clear/multi-color)
 - **GPS** — Real-time location sharing with distance calculation
 - **Controls** — Brightness, vibrate, ping, clipboard sync, battery monitor
-- **Sensors** — Accelerometer / gyroscope / magnetometer streaming (expo-sensors)
+- **Sensors** — Accelerometer / gyroscope / magnetometer logging with CSV export
 - **Contacts** — Share device contacts with peer (expo-contacts)
 - **Network** — IP address, connection type, same-network detection (expo-network)
-- **Speak** — Text-to-speech on remote device with voice settings (expo-speech)
+- **Speak** — Text-to-speech on remote device with voice/rate/pitch settings (expo-speech)
+- **Macros** — Custom macro pad: define named buttons with command sequences, persisted in AsyncStorage
+- **Screen** — Remote screen capture: request peer screenshot or send yours (react-native-view-shot)
+- **Log** — Session log: tracks all events (chat/location/file/control/voice) export as JSON or CSV
 - **Remote** — Directional control pad (Sky role only)
-- **Info** — Session details and feature overview
+- **Info** — Session details and full feature list
 
 ### Native Build Config
 - `app.json` has full iOS/Android permissions (camera, microphone, location, contacts, media library)
 - `eas.json` configured with development (simulator+APK), preview, and production profiles
+- metro.config.js blockList covers socket.io, engine.io, css-line-break tmp dirs, all _tmp_N patterns
+- WebRTC and ViewShot degrade gracefully in Expo Go with informative UI
 
 ## Stack
 

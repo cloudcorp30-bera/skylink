@@ -66,9 +66,12 @@
     "expo-file-system": "~19.0.21",
     "expo-media-library": "^18.2.1",
     "expo-network": "~8.0.8",
+    "expo-screen-capture": "~8.0.9",
     "expo-sensors": "~15.0.8",
     "expo-sharing": "^14.0.8",
     "expo-speech": "~14.0.8",
+    "react-native-view-shot": "4.0.3",
+    "react-native-webrtc": "^124.0.7",
     "socket.io-client": "^4.8.3"
   }
 }

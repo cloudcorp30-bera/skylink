@@ -54,12 +54,20 @@ const RELAY_EVENTS = [
   "typing-indicator",
   "screen-share-frame",
   "sensor-data",
+  "sensor-log-entry",
   "wb-stroke",
   "wb-clear",
   "wb-undo",
   "tts-speak",
   "network-info",
   "contacts-share",
+  "macro-trigger",
+  "screenshot-request",
+  "screenshot-response",
+  "webrtc-offer",
+  "webrtc-answer",
+  "webrtc-ice",
+  "webrtc-hangup",
 ];
 
 export function initSocketServer(httpServer: HttpServer) {
