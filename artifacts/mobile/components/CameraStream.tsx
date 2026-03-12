@@ -31,7 +31,7 @@ export function CameraStream({ peerConnected, bottomInset = 0 }: CameraStreamPro
   const [viewMode, setViewMode] = useState<"local" | "remote">("remote");
   const cameraRef = useRef<CameraView>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const { socket, emitEvent, onEvent } = useTransfer();
+  const { emitEvent, onEvent } = useTransfer();
 
   useEffect(() => {
     const unsub = onEvent("camera-frame", (data: { frame: string }) => {

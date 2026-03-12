@@ -1,138 +1,139 @@
 import type { Server as HttpServer } from "http";
-import { Server as SocketServer } from "socket.io";
+import { WebSocketServer, WebSocket } from "ws";
 
 interface PeerInfo {
+  ws: WebSocket;
   socketId: string;
   role: "sky" | "link";
   name: string;
-}
-
-interface Room {
   roomId: string;
-  peers: Map<string, PeerInfo>;
-  createdAt: number;
+  alive: boolean;
 }
 
-const rooms = new Map<string, Room>();
+const peers = new Map<WebSocket, PeerInfo>();
+const rooms = new Map<string, Set<WebSocket>>();
 
-function getOrCreateRoom(roomId: string): Room {
-  if (!rooms.has(roomId)) {
-    rooms.set(roomId, { roomId, peers: new Map(), createdAt: Date.now() });
-  }
-  return rooms.get(roomId)!;
+function getRoommates(ws: WebSocket): WebSocket[] {
+  const info = peers.get(ws);
+  if (!info) return [];
+  const room = rooms.get(info.roomId);
+  if (!room) return [];
+  return Array.from(room).filter((w) => w !== ws && w.readyState === WebSocket.OPEN);
 }
 
-function cleanupRooms() {
-  const now = Date.now();
-  const ONE_HOUR = 60 * 60 * 1000;
-  for (const [roomId, room] of rooms) {
-    if (room.peers.size === 0 && now - room.createdAt > ONE_HOUR) {
-      rooms.delete(roomId);
-    }
+function broadcast(from: WebSocket, payload: object) {
+  const msg = JSON.stringify(payload);
+  for (const peer of getRoommates(from)) {
+    peer.send(msg);
   }
 }
 
-setInterval(cleanupRooms, 10 * 60 * 1000);
+function leaveRoom(ws: WebSocket) {
+  const info = peers.get(ws);
+  if (!info) return;
+  const room = rooms.get(info.roomId);
+  if (room) {
+    room.delete(ws);
+    if (room.size === 0) rooms.delete(info.roomId);
+  }
+  peers.delete(ws);
+  broadcast(ws, { event: "peer-left", role: info.role, name: info.name });
+  console.log(`[WS] ${info.role}/${info.name} left room ${info.roomId}. Room size: ${room?.size ?? 0}`);
+}
 
-const RELAY_EVENTS = [
-  "chat-message",
-  "control-command",
-  "file-start",
-  "file-chunk",
-  "file-end",
-  "file-error",
-  "camera-frame",
-  "camera-stop",
-  "location-update",
-  "location-stop",
-  "audio-chunk",
-  "clipboard-sync",
-  "device-control",
-  "device-info",
-  "battery-update",
-  "brightness-update",
-  "typing-indicator",
-  "screen-share-frame",
-  "sensor-data",
-  "sensor-log-entry",
-  "wb-stroke",
-  "wb-clear",
-  "wb-undo",
-  "tts-speak",
-  "network-info",
-  "contacts-share",
-  "macro-trigger",
-  "screenshot-request",
-  "screenshot-response",
-  "webrtc-offer",
-  "webrtc-answer",
-  "webrtc-ice",
-  "webrtc-hangup",
-  "remote-command",
-  "device-report",
-  "device-report-request",
-];
+function genId() {
+  return Math.random().toString(36).slice(2, 10);
+}
 
 export function initSocketServer(httpServer: HttpServer) {
-  const io = new SocketServer(httpServer, {
-    cors: { origin: "*", methods: ["GET", "POST"] },
-    maxHttpBufferSize: 50 * 1024 * 1024,
-    pingTimeout: 60000,
-    pingInterval: 25000,
-    // Replit proxy keeps the /api prefix when forwarding to port 8080,
-    // so socket.io must be mounted at /api/socket.io not /socket.io
-    path: "/api/socket.io",
-  });
+  const wss = new WebSocketServer({ server: httpServer, path: "/api/ws" });
 
-  io.on("connection", (socket) => {
-    let currentRoom: string | null = null;
-    let currentRole: "sky" | "link" | null = null;
+  console.log("[WS] WebSocket server ready on path /api/ws");
 
-    console.log(`[Socket] Connected: ${socket.id}`);
-
-    socket.on(
-      "join-room",
-      ({ roomId, role, name }: { roomId: string; role: "sky" | "link"; name: string }) => {
-        if (currentRoom) {
-          socket.leave(currentRoom);
-          rooms.get(currentRoom)?.peers.delete(socket.id);
-        }
-
-        currentRoom = roomId.toUpperCase();
-        currentRole = role;
-        const room = getOrCreateRoom(currentRoom);
-        room.peers.set(socket.id, { socketId: socket.id, role, name });
-        socket.join(currentRoom);
-
-        const otherPeers = Array.from(room.peers.values()).filter(
-          (p) => p.socketId !== socket.id
-        );
-
-        socket.emit("room-joined", { roomId: currentRoom, peersAlready: otherPeers });
-        socket.to(currentRoom).emit("peer-joined", { socketId: socket.id, role, name });
-        console.log(`[Room ${currentRoom}] ${role}/${name} joined. Peers: ${room.peers.size}`);
+  // Server-side ping/pong heartbeat — keeps connections alive through proxies
+  const heartbeat = setInterval(() => {
+    for (const [ws, info] of peers) {
+      if (!info.alive) {
+        console.log(`[WS] Terminating unresponsive socket ${info.socketId}`);
+        ws.terminate();
+        leaveRoom(ws);
+        continue;
       }
-    );
-
-    for (const event of RELAY_EVENTS) {
-      socket.on(event, (data: unknown) => {
-        if (!currentRoom) return;
-        socket.to(currentRoom).emit(event, {
-          ...(typeof data === "object" && data !== null ? data : { data }),
-          senderSocketId: socket.id,
-          senderRole: currentRole,
-        });
-      });
+      info.alive = false;
+      try { ws.ping(); } catch {}
     }
+  }, 20000);
 
-    socket.on("disconnect", (reason) => {
-      console.log(`[Socket] Disconnected: ${socket.id}  reason=${reason}  room=${currentRoom ?? "none"}`);
-      if (currentRoom) {
-        rooms.get(currentRoom)?.peers.delete(socket.id);
-        socket.to(currentRoom).emit("peer-left", { socketId: socket.id, role: currentRole });
-      }
+  wss.on("close", () => clearInterval(heartbeat));
+
+  wss.on("connection", (ws) => {
+    const socketId = genId();
+    console.log(`[WS] Connected: ${socketId}`);
+
+    ws.on("pong", () => {
+      const info = peers.get(ws);
+      if (info) info.alive = true;
     });
+
+    ws.on("message", (raw) => {
+      let msg: { event: string; [key: string]: unknown };
+      try {
+        msg = JSON.parse(raw.toString());
+      } catch {
+        return;
+      }
+
+      if (msg.event === "ping") {
+        ws.send(JSON.stringify({ event: "pong" }));
+        return;
+      }
+
+      if (msg.event === "join-room") {
+        const roomId = String(msg.roomId ?? "").toUpperCase().trim();
+        const role = msg.role as "sky" | "link";
+        const name = String(msg.name ?? role);
+
+        if (!roomId || !role) return;
+
+        if (peers.has(ws)) leaveRoom(ws);
+
+        if (!rooms.has(roomId)) rooms.set(roomId, new Set());
+        rooms.get(roomId)!.add(ws);
+
+        const info: PeerInfo = { ws, socketId, role, name, roomId, alive: true };
+        peers.set(ws, info);
+
+        const roomMates = getRoommates(ws);
+        const peersAlready = roomMates.map((w) => {
+          const p = peers.get(w)!;
+          return { socketId: p.socketId, role: p.role, name: p.name };
+        });
+
+        ws.send(JSON.stringify({ event: "room-joined", roomId, peersAlready }));
+        broadcast(ws, { event: "peer-joined", socketId, role, name });
+
+        console.log(`[WS][Room ${roomId}] ${role}/${name} joined. Room size: ${rooms.get(roomId)!.size}  peersAlready=${peersAlready.length}`);
+        return;
+      }
+
+      const info = peers.get(ws);
+      if (!info) return;
+
+      broadcast(ws, { ...msg, senderRole: info.role, senderSocketId: info.socketId });
+    });
+
+    ws.on("close", (code, reason) => {
+      const info = peers.get(ws);
+      console.log(`[WS] Disconnected: ${info?.socketId ?? socketId}  room=${info?.roomId ?? "none"}  code=${code}  reason=${reason.toString() || "—"}`);
+      leaveRoom(ws);
+    });
+
+    ws.on("error", (err) => {
+      console.error(`[WS] Error on ${socketId}: ${err.message}`);
+    });
+
+    ws.send(JSON.stringify({ event: "connected", socketId }));
   });
 
-  return io;
+  return wss;
 }
