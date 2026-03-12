@@ -77,7 +77,7 @@ function generateId() {
 
 export default function SessionScreen() {
   const insets = useSafeAreaInsets();
-  const { role, roomId, peerConnected: localPeerConnected, peerName, disconnect } = useSkyLink();
+  const { role, roomId, peerName, disconnect } = useSkyLink();
   const {
     socketConnected, peerPresent,
     connectToRoom, disconnectFromRoom,
@@ -94,7 +94,7 @@ export default function SessionScreen() {
   const bottomInset = Platform.OS === "web" ? Math.max(insets.bottom, 34) : insets.bottom;
   const isSky = role === "sky";
   const accentColor = isSky ? Colors.primary : Colors.accent;
-  const isPeerConnected = peerPresent || localPeerConnected;
+  const isPeerConnected = peerPresent;
 
   const addMessage = useCallback((
     type: Message["type"], content: string, sender: Message["sender"], extras?: Partial<Message>
@@ -113,9 +113,23 @@ export default function SessionScreen() {
 
   useEffect(() => onControlReceived(cmd => addMessage("control", `Received: ${cmd.command}`, "peer", { controlCommand: cmd.command })), [onControlReceived, addMessage]);
 
+  const prevPeerRef = useRef(false);
   useEffect(() => {
-    if (peerPresent) addMessage("system", `${isSky ? "Link" : "Sky"} connected.`, "system");
+    if (peerPresent && !prevPeerRef.current) {
+      addMessage("system", `${isSky ? "Link" : "Sky"} connected.`, "system");
+    } else if (!peerPresent && prevPeerRef.current) {
+      addMessage("system", `${isSky ? "Link" : "Sky"} disconnected.`, "system");
+    }
+    prevPeerRef.current = peerPresent;
   }, [peerPresent]);
+
+  const handleRetry = useCallback(() => {
+    if (!roomId || !role) return;
+    hasConnectedRef.current = false;
+    connectToRoom(roomId, role, isSky ? "Sky Controller" : "Link Device");
+    addMessage("system", "Retrying connection...", "system");
+    hasConnectedRef.current = true;
+  }, [roomId, role, isSky, connectToRoom, addMessage]);
 
   const handleSendMessage = useCallback((content: string) => {
     sendChatMessage(content);
@@ -167,6 +181,15 @@ export default function SessionScreen() {
           <Text style={[styles.roleText, { color: accentColor }]}>{isSky ? "SKY" : "LINK"}</Text>
         </View>
       </View>
+
+      {/* Server not connected banner */}
+      {!socketConnected && (
+        <Pressable onPress={handleRetry} style={styles.retryBanner}>
+          <Feather name="wifi-off" size={14} color={Colors.warning} />
+          <Text style={styles.retryText}>Not connected to server — tap to retry</Text>
+          <Feather name="refresh-cw" size={14} color={Colors.warning} />
+        </Pressable>
+      )}
 
       {/* Tab Bar */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabsScroll} contentContainerStyle={styles.tabsContent}>
@@ -342,6 +365,12 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.warning + "44",
   },
   warnText: { fontFamily: "Inter_500Medium", fontSize: 13, color: Colors.warning, flex: 1 },
+  retryBanner: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    backgroundColor: Colors.warning + "18", paddingHorizontal: 16, paddingVertical: 10,
+    borderBottomWidth: 1, borderBottomColor: Colors.warning + "33",
+  },
+  retryText: { fontFamily: "Inter_500Medium", fontSize: 13, color: Colors.warning, flex: 1 },
   sectionTitle: { fontFamily: "Inter_700Bold", fontSize: 20, color: Colors.textPrimary },
   sectionDesc: { fontFamily: "Inter_400Regular", fontSize: 14, color: Colors.textSecondary, lineHeight: 20 },
   infoCard: {

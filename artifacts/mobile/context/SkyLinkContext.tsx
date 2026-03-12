@@ -81,14 +81,12 @@ function uniqueSessionId(): string {
 export function SkyLinkProvider({ children }: { children: React.ReactNode }) {
   const [role, setRole] = useState<Role | null>(null);
   const [roomId, setRoomId] = useState<string | null>(null);
-  const [connectionStatus, setConnectionStatus] =
-    useState<ConnectionStatus>("idle");
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("idle");
   const [peerConnected, setPeerConnected] = useState(false);
   const [peerName, setPeerName] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
-  const connectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentSessionRef = useRef<Session | null>(null);
 
   const addMessage = useCallback(
@@ -114,10 +112,7 @@ export function SkyLinkProvider({ children }: { children: React.ReactNode }) {
 
   const saveSessions = useCallback(async (updatedSessions: Session[]) => {
     try {
-      await AsyncStorage.setItem(
-        SESSIONS_KEY,
-        JSON.stringify(updatedSessions)
-      );
+      await AsyncStorage.setItem(SESSIONS_KEY, JSON.stringify(updatedSessions));
     } catch (e) {
       console.error("Failed to save sessions", e);
     }
@@ -171,34 +166,11 @@ export function SkyLinkProvider({ children }: { children: React.ReactNode }) {
     setPeerName(null);
     currentSessionRef.current = session;
 
-    addMessage("system", "Waiting for Link to connect...", "system");
-
-    connectTimeoutRef.current = setTimeout(() => {
-      setPeerConnected(true);
-      setPeerName("Link Device");
-      setConnectionStatus("connected");
-      addMessage("system", "Link has joined the session.", "system");
-
-      const updatedSession: Session = {
-        ...session,
-        peerName: "Link Device",
-        lastActivity: Date.now(),
-      };
-      currentSessionRef.current = updatedSession;
-      setSessions((prev) => {
-        const updated = prev.map((s) =>
-          s.id === updatedSession.id ? updatedSession : s
-        );
-        saveSessions(updated);
-        return updated;
-      });
-    }, 3000);
-
     const updated = [session, ...sessions];
     setSessions(updated);
     await saveSessions(updated);
     return newRoomId;
-  }, [sessions, saveSessions, addMessage]);
+  }, [sessions, saveSessions]);
 
   const joinAsLink = useCallback(
     async (targetRoomId: string) => {
@@ -218,34 +190,11 @@ export function SkyLinkProvider({ children }: { children: React.ReactNode }) {
       setPeerName(null);
       currentSessionRef.current = session;
 
-      addMessage("system", "Connecting to Sky...", "system");
-
-      connectTimeoutRef.current = setTimeout(() => {
-        setPeerConnected(true);
-        setPeerName("Sky Controller");
-        setConnectionStatus("connected");
-        addMessage("system", "Connected to Sky controller.", "system");
-
-        const updatedSession: Session = {
-          ...session,
-          peerName: "Sky Controller",
-          lastActivity: Date.now(),
-        };
-        currentSessionRef.current = updatedSession;
-        setSessions((prev) => {
-          const updated = prev.map((s) =>
-            s.id === updatedSession.id ? updatedSession : s
-          );
-          saveSessions(updated);
-          return updated;
-        });
-      }, 2000);
-
       const updated = [session, ...sessions];
       setSessions(updated);
       await saveSessions(updated);
     },
-    [sessions, saveSessions, addMessage]
+    [sessions, saveSessions]
   );
 
   const resumeSession = useCallback((session: Session) => {
@@ -256,24 +205,11 @@ export function SkyLinkProvider({ children }: { children: React.ReactNode }) {
     setPeerConnected(false);
     setPeerName(null);
     currentSessionRef.current = session;
-
-    addMessage("system", "Reconnecting to session...", "system");
-
-    setTimeout(() => {
-      setPeerConnected(true);
-      setPeerName(session.peerName ?? "Peer");
-      setConnectionStatus("connected");
-      addMessage(
-        "system",
-        `Reconnected to ${session.peerName ?? "peer"}.`,
-        "system"
-      );
-    }, 2000);
-  }, [addMessage]);
+  }, []);
 
   const sendMessage = useCallback(
     (content: string) => {
-      if (!peerConnected || !content.trim()) return;
+      if (!content.trim()) return;
       addMessage("text", content, "self");
       if (currentSessionRef.current) {
         currentSessionRef.current = {
@@ -283,62 +219,32 @@ export function SkyLinkProvider({ children }: { children: React.ReactNode }) {
         };
         setSessions((prev) => {
           const updated = prev.map((s) =>
-            s.id === currentSessionRef.current?.id
-              ? currentSessionRef.current!
-              : s
+            s.id === currentSessionRef.current?.id ? currentSessionRef.current! : s
           );
           saveSessions(updated);
           return updated;
         });
       }
-
-      setTimeout(() => {
-        const responses = [
-          "Got it!",
-          "Understood.",
-          "Received.",
-          "On it!",
-          "Acknowledged.",
-        ];
-        addMessage(
-          "text",
-          responses[Math.floor(Math.random() * responses.length)],
-          "peer"
-        );
-      }, 1200);
     },
-    [peerConnected, addMessage, saveSessions]
+    [addMessage, saveSessions]
   );
 
   const sendControlCommand = useCallback(
     (command: string) => {
-      if (!peerConnected) return;
-      addMessage("control", `Sent: ${command}`, "self", {
-        controlCommand: command,
-      });
-      setTimeout(() => {
-        addMessage("control", `Executed: ${command}`, "peer", {
-          controlCommand: command,
-        });
-      }, 800);
+      addMessage("control", `Sent: ${command}`, "self", { controlCommand: command });
     },
-    [peerConnected, addMessage]
+    [addMessage]
   );
 
   const disconnect = useCallback(() => {
-    if (connectTimeoutRef.current) {
-      clearTimeout(connectTimeoutRef.current);
-    }
     setConnectionStatus("disconnected");
     setPeerConnected(false);
-    addMessage("system", "Session disconnected.", "system");
-    setTimeout(() => {
-      setRole(null);
-      setRoomId(null);
-      setConnectionStatus("idle");
-      setMessages([]);
-    }, 1500);
-  }, [addMessage]);
+    setRole(null);
+    setRoomId(null);
+    setConnectionStatus("idle");
+    setMessages([]);
+    currentSessionRef.current = null;
+  }, []);
 
   const clearMessages = useCallback(() => {
     setMessages([]);
@@ -346,11 +252,6 @@ export function SkyLinkProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     loadSessions();
-    return () => {
-      if (connectTimeoutRef.current) {
-        clearTimeout(connectTimeoutRef.current);
-      }
-    };
   }, [loadSessions]);
 
   const value = useMemo(
