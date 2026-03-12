@@ -15,6 +15,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SkyLinkProvider } from "@/context/SkyLinkContext";
+import { TransferProvider } from "@/context/TransferContext";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -52,11 +53,13 @@ export default function RootLayout() {
       <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
           <SkyLinkProvider>
-            <GestureHandlerRootView style={{ flex: 1 }}>
-              <KeyboardProvider>
-                <RootLayoutNav />
-              </KeyboardProvider>
-            </GestureHandlerRootView>
+            <TransferProvider>
+              <GestureHandlerRootView style={{ flex: 1 }}>
+                <KeyboardProvider>
+                  <RootLayoutNav />
+                </KeyboardProvider>
+              </GestureHandlerRootView>
+            </TransferProvider>
           </SkyLinkProvider>
         </QueryClientProvider>
       </ErrorBoundary>

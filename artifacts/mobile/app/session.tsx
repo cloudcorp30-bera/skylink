@@ -1,7 +1,8 @@
 import { Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
-import React, { useRef, useState } from "react";
+import * as Haptics from "expo-haptics";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   FlatList,
@@ -16,13 +17,19 @@ import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ChatInput } from "@/components/ChatInput";
 import { ControlPad } from "@/components/ControlPad";
+import { FileTransferPanel } from "@/components/FileTransferPanel";
 import { MessageBubble } from "@/components/MessageBubble";
 import { StatusDot } from "@/components/StatusDot";
 import Colors from "@/constants/colors";
 import { useSkyLink } from "@/context/SkyLinkContext";
-import * as Haptics from "expo-haptics";
+import { useTransfer } from "@/context/TransferContext";
+import type { Message } from "@/context/SkyLinkContext";
 
-type TabKey = "chat" | "remote" | "info";
+type TabKey = "chat" | "files" | "remote" | "info";
+
+function generateId() {
+  return Date.now().toString() + Math.random().toString(36).slice(2, 6);
+}
 
 export default function SessionScreen() {
   const insets = useSafeAreaInsets();
@@ -30,20 +37,104 @@ export default function SessionScreen() {
     role,
     roomId,
     connectionStatus,
-    peerConnected,
+    peerConnected: localPeerConnected,
     peerName,
-    messages,
-    sendMessage,
-    sendControlCommand,
     disconnect,
   } = useSkyLink();
+
+  const {
+    socketConnected,
+    peerPresent,
+    connectToRoom,
+    disconnectFromRoom,
+    sendChatMessage,
+    onMessageReceived,
+    sendControl,
+    onControlReceived,
+  } = useTransfer();
+
   const [activeTab, setActiveTab] = useState<TabKey>("chat");
+  const [messages, setMessages] = useState<Message[]>([]);
+  const hasConnectedRef = useRef(false);
 
   const topInset = Platform.OS === "web" ? Math.max(insets.top, 67) : insets.top;
   const bottomInset = Platform.OS === "web" ? Math.max(insets.bottom, 34) : insets.bottom;
 
   const isSky = role === "sky";
   const accentColor = isSky ? Colors.primary : Colors.accent;
+
+  const isReallyConnected = socketConnected || localPeerConnected;
+  const isPeerConnected = peerPresent || localPeerConnected;
+
+  const addMessage = useCallback(
+    (
+      type: Message["type"],
+      content: string,
+      sender: Message["sender"],
+      extras?: Partial<Message>
+    ) => {
+      const msg: Message = {
+        id: generateId(),
+        type,
+        content,
+        sender,
+        timestamp: Date.now(),
+        ...extras,
+      };
+      setMessages((prev) => [msg, ...prev]);
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!roomId || !role || hasConnectedRef.current) return;
+    hasConnectedRef.current = true;
+
+    const name = isSky ? "Sky Controller" : "Link Device";
+    connectToRoom(roomId, role, name);
+
+    addMessage("system", `Session ${roomId} started.`, "system");
+  }, [roomId, role]);
+
+  useEffect(() => {
+    const unsub = onMessageReceived((msg) => {
+      addMessage("text", msg.content, "peer");
+    });
+    return unsub;
+  }, [onMessageReceived, addMessage]);
+
+  useEffect(() => {
+    const unsub = onControlReceived((cmd) => {
+      addMessage("control", `Received: ${cmd.command}`, "peer", {
+        controlCommand: cmd.command,
+      });
+    });
+    return unsub;
+  }, [onControlReceived, addMessage]);
+
+  useEffect(() => {
+    if (peerPresent) {
+      addMessage("system", `${isSky ? "Link" : "Sky"} connected.`, "system");
+    }
+  }, [peerPresent]);
+
+  const handleSendMessage = useCallback(
+    (content: string) => {
+      sendChatMessage(content);
+      addMessage("text", content, "self");
+    },
+    [sendChatMessage, addMessage]
+  );
+
+  const handleSendControl = useCallback(
+    (command: string) => {
+      sendControl(command);
+      addMessage("control", `Sent: ${command}`, "self", {
+        controlCommand: command,
+      });
+    },
+    [sendControl, addMessage]
+  );
 
   const handleDisconnect = () => {
     Alert.alert("Disconnect", "End this SkyLink session?", [
@@ -52,6 +143,7 @@ export default function SessionScreen() {
         text: "Disconnect",
         style: "destructive",
         onPress: () => {
+          disconnectFromRoom();
           disconnect();
           router.replace("/");
         },
@@ -61,11 +153,24 @@ export default function SessionScreen() {
 
   const TABS: { key: TabKey; icon: keyof typeof Feather.glyphMap; label: string }[] = [
     { key: "chat", icon: "message-circle", label: "Chat" },
+    { key: "files", icon: "send", label: "Files" },
     ...(isSky
       ? [{ key: "remote" as TabKey, icon: "terminal" as const, label: "Control" }]
       : []),
     { key: "info", icon: "info", label: "Info" },
   ];
+
+  const statusLabel = socketConnected
+    ? isPeerConnected
+      ? `Connected · ${peerName ?? (isSky ? "Link" : "Sky")}`
+      : "Waiting for peer..."
+    : "Connecting...";
+
+  const connStatus = socketConnected
+    ? isPeerConnected
+      ? "connected"
+      : "connecting"
+    : "connecting";
 
   return (
     <View style={[styles.container, { paddingTop: topInset }]}>
@@ -83,17 +188,19 @@ export default function SessionScreen() {
             {isSky ? "Sky" : "Link"} · {roomId}
           </Text>
           <View style={styles.statusRow}>
-            <StatusDot status={connectionStatus} size={6} />
-            <Text style={styles.statusText}>
-              {connectionStatus === "connected"
-                ? `Connected to ${peerName ?? "peer"}`
-                : connectionStatus === "connecting"
-                  ? "Connecting..."
-                  : "Disconnected"}
-            </Text>
+            <StatusDot status={connStatus} size={6} />
+            <Text style={styles.statusText}>{statusLabel}</Text>
           </View>
         </View>
-        <View style={[styles.rolePill, { backgroundColor: accentColor + "22", borderColor: accentColor + "55" }]}>
+        <View
+          style={[
+            styles.rolePill,
+            {
+              backgroundColor: accentColor + "22",
+              borderColor: accentColor + "55",
+            },
+          ]}
+        >
           <Text style={[styles.roleText, { color: accentColor }]}>
             {isSky ? "SKY" : "LINK"}
           </Text>
@@ -113,7 +220,9 @@ export default function SessionScreen() {
             <Feather
               name={tab.icon}
               size={16}
-              color={activeTab === tab.key ? accentColor : Colors.textSecondary}
+              color={
+                activeTab === tab.key ? accentColor : Colors.textSecondary
+              }
             />
             <Text
               style={[
@@ -124,7 +233,12 @@ export default function SessionScreen() {
               {tab.label}
             </Text>
             {activeTab === tab.key && (
-              <View style={[styles.tabIndicator, { backgroundColor: accentColor }]} />
+              <View
+                style={[
+                  styles.tabIndicator,
+                  { backgroundColor: accentColor },
+                ]}
+              />
             )}
           </Pressable>
         ))}
@@ -138,10 +252,14 @@ export default function SessionScreen() {
         >
           {messages.length === 0 ? (
             <View style={styles.emptyChat}>
-              <Feather name="message-circle" size={40} color={Colors.textSecondary} />
+              <Feather
+                name="message-circle"
+                size={40}
+                color={Colors.textSecondary}
+              />
               <Text style={styles.emptyChatTitle}>No messages yet</Text>
               <Text style={styles.emptyChatDesc}>
-                {peerConnected
+                {isPeerConnected
                   ? "Say something to your peer!"
                   : "Waiting for peer to connect..."}
               </Text>
@@ -160,38 +278,53 @@ export default function SessionScreen() {
           )}
           <View style={{ paddingBottom: bottomInset }}>
             <ChatInput
-              onSend={sendMessage}
-              disabled={!peerConnected}
-              placeholder={peerConnected ? "Message..." : "Waiting for peer..."}
+              onSend={handleSendMessage}
+              disabled={!isPeerConnected}
+              placeholder={
+                isPeerConnected ? "Message..." : "Waiting for peer..."
+              }
             />
           </View>
         </KeyboardAvoidingView>
       )}
 
+      {activeTab === "files" && (
+        <FileTransferPanel
+          peerConnected={isPeerConnected}
+          bottomInset={bottomInset}
+        />
+      )}
+
       {activeTab === "remote" && isSky && (
         <ScrollView
-          contentContainerStyle={[styles.remoteContent, { paddingBottom: bottomInset + 24 }]}
+          contentContainerStyle={[
+            styles.remoteContent,
+            { paddingBottom: bottomInset + 24 },
+          ]}
           showsVerticalScrollIndicator={false}
         >
-          {!peerConnected && (
+          {!isPeerConnected && (
             <View style={styles.notConnectedBanner}>
               <Feather name="alert-circle" size={16} color={Colors.warning} />
               <Text style={styles.notConnectedText}>
-                Controls are disabled until Link connects
+                Controls disabled until Link connects
               </Text>
             </View>
           )}
           <Text style={styles.remoteTitle}>Remote Controls</Text>
           <Text style={styles.remoteDesc}>
-            Tap any control to send a command to the Link device in real time.
+            Send commands to the Link device in real time.
           </Text>
-          <ControlPad onCommand={sendControlCommand} disabled={!peerConnected} />
+          <ControlPad onCommand={handleSendControl} disabled={!isPeerConnected} />
         </ScrollView>
       )}
 
       {activeTab === "info" && (
         <ScrollView
-          contentContainerStyle={[styles.infoContent, { paddingBottom: bottomInset + 24 }]}
+          contentContainerStyle={[
+            styles.infoContent,
+            { paddingBottom: bottomInset + 24 },
+          ]}
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.infoSection}>
@@ -200,9 +333,12 @@ export default function SessionScreen() {
               { label: "Room ID", value: roomId ?? "—" },
               { label: "Your Role", value: isSky ? "Sky (Controller)" : "Link (Device)" },
               { label: "Peer", value: peerName ?? "Not connected" },
-              { label: "Status", value: connectionStatus },
-              { label: "Messages", value: messages.filter(m => m.type === "text").length.toString() },
-              { label: "Commands Sent", value: messages.filter(m => m.type === "control" && m.sender === "self").length.toString() },
+              { label: "Socket", value: socketConnected ? "Connected" : "Offline" },
+              { label: "Peer Present", value: isPeerConnected ? "Yes" : "No" },
+              {
+                label: "Messages",
+                value: messages.filter((m) => m.type === "text").length.toString(),
+              },
             ].map((row) => (
               <View key={row.label} style={styles.infoRow}>
                 <Text style={styles.infoLabel}>{row.label}</Text>
@@ -212,11 +348,12 @@ export default function SessionScreen() {
           </View>
 
           <View style={styles.infoSection}>
-            <Text style={styles.infoSectionTitle}>Connection Security</Text>
+            <Text style={styles.infoSectionTitle}>Transfer Method</Text>
             {[
-              { icon: "lock" as const, label: "End-to-End Encrypted", ok: true },
-              { icon: "shield" as const, label: "Secure P2P Channel", ok: true },
-              { icon: "eye-off" as const, label: "No Server Storage", ok: true },
+              { icon: "wifi" as const, label: "WiFi Relay via Server" },
+              { icon: "lock" as const, label: "WebSocket Encrypted" },
+              { icon: "zap" as const, label: "Low Latency Chunked Transfer" },
+              { icon: "eye-off" as const, label: "No Permanent Storage" },
             ].map((item) => (
               <View key={item.label} style={styles.securityRow}>
                 <Feather name={item.icon} size={16} color={Colors.success} />
@@ -226,10 +363,7 @@ export default function SessionScreen() {
             ))}
           </View>
 
-          <Pressable
-            onPress={handleDisconnect}
-            style={styles.disconnectBtn}
-          >
+          <Pressable onPress={handleDisconnect} style={styles.disconnectBtn}>
             <Feather name="log-out" size={16} color={Colors.danger} />
             <Text style={styles.disconnectText}>End Session</Text>
           </Pressable>
@@ -240,10 +374,7 @@ export default function SessionScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.dark,
-  },
+  container: { flex: 1, backgroundColor: Colors.dark },
   navBar: {
     flexDirection: "row",
     alignItems: "center",
@@ -263,22 +394,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  navCenter: {
-    flex: 1,
-    alignItems: "center",
-    gap: 4,
-  },
+  navCenter: { flex: 1, alignItems: "center", gap: 4 },
   navTitle: {
     fontFamily: "Inter_700Bold",
     fontSize: 15,
     color: Colors.textPrimary,
     letterSpacing: 1,
   },
-  statusRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
+  statusRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   statusText: {
     fontFamily: "Inter_400Regular",
     fontSize: 12,
@@ -290,11 +413,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
   },
-  roleText: {
-    fontFamily: "Inter_700Bold",
-    fontSize: 11,
-    letterSpacing: 1,
-  },
+  roleText: { fontFamily: "Inter_700Bold", fontSize: 11, letterSpacing: 1 },
   tabs: {
     flexDirection: "row",
     borderBottomWidth: 1,
@@ -313,21 +432,18 @@ const styles = StyleSheet.create({
   tabActive: {},
   tabLabel: {
     fontFamily: "Inter_500Medium",
-    fontSize: 13,
+    fontSize: 12,
     color: Colors.textSecondary,
   },
   tabIndicator: {
     position: "absolute",
     bottom: 0,
-    left: "25%",
-    right: "25%",
+    left: "20%",
+    right: "20%",
     height: 2,
     borderRadius: 1,
   },
-  messageList: {
-    paddingVertical: 12,
-    gap: 4,
-  },
+  messageList: { paddingVertical: 12, gap: 4 },
   emptyChat: {
     flex: 1,
     alignItems: "center",
@@ -346,10 +462,7 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     textAlign: "center",
   },
-  remoteContent: {
-    padding: 20,
-    gap: 16,
-  },
+  remoteContent: { padding: 20, gap: 16 },
   notConnectedBanner: {
     flexDirection: "row",
     alignItems: "center",
@@ -377,10 +490,7 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     lineHeight: 20,
   },
-  infoContent: {
-    padding: 20,
-    gap: 20,
-  },
+  infoContent: { padding: 20, gap: 20 },
   infoSection: {
     backgroundColor: Colors.surface,
     borderRadius: 18,
