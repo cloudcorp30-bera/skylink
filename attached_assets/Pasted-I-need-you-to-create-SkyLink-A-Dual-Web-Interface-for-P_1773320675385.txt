@@ -1,0 +1,1034 @@
+I need you to create: SkyLink - A Dual-Web Interface for Peer-to-Peer Media Sharing and Remote Device Control
+Project Overview: "Sky" + "Link" = "SkyLink"
+SkyLink is a sophisticated web application that creates a direct, secure bridge between two users—designated as "Sky" (the controller) and "Link" (the controlled device). When these two instances connect, they form "SkyLink": a powerful peer-to-peer connection enabling real-time media sharing, file transfer, and remote screen control, operating on the same principle as WhatsApp Web but with expanded capabilities for true device interaction.
+
+This project leverages the Temasys Skylink SDK , a mature WebRTC-based library that provides all the underlying infrastructure for peer-to-peer communication, including audio/video streaming, file transfer, and data channels . By building on this SDK, you avoid reinventing complex WebRTC signaling and can focus on creating an intuitive, feature-rich user experience.
+
+Core Architecture & Technical Stack
+Technology Foundation
+Frontend Framework: React.js (Create React App for rapid prototyping) 
+
+Real-time Communication Engine: SkylinkJS Web SDK v2.6.2+ 
+
+Backend Services: Node.js with Express (minimal, for authentication and user presence only)
+
+Styling: Tailwind CSS or Material-UI for modern, responsive design
+
+State Management: React Context API or Redux for managing connection states
+
+System Components
+Sky Portal (Controller Interface)
+
+Link Portal (Device/Peer Interface)
+
+Skylink Connection Manager (Core orchestration layer)
+
+Media Transfer Engine
+
+Remote Control Protocol Handler
+
+Phase 1: Foundation & Authentication Setup
+Step 1: Project Initialization
+bash
+npx create-react-app skylink-app
+cd skylink-app
+npm install skylinkjs react-router-dom axios socket.io-client
+npm install @material-ui/core @material-ui/icons  # Optional for UI
+Step 2: Temasys Account Configuration
+Register at Temasys Console 
+
+Create a new application and generate your App Key and Secret
+
+Configure your app for Web platform with appropriate permissions
+
+Store credentials in environment variables:
+
+text
+REACT_APP_SKYLINK_APP_KEY=your_app_key_here
+REACT_APP_SKYLINK_APP_SECRET=your_app_secret_here
+REACT_APP_SKYLINK_ROOM_NAME=skylink_room_prefix
+Step 3: Create the Skylink Service Layer
+javascript
+// src/services/skylinkService.js
+import Skylink from 'skylinkjs';
+
+class SkylinkService {
+  constructor() {
+    this.skylink = null;
+    this.connection = null;
+    this.roomListeners = new Map();
+    this.localStream = null;
+    this.peerId = null;
+  }
+
+  initialize(appKey, appSecret, roomName, userData) {
+    return new Promise((resolve, reject) => {
+      // SkylinkJS initialization with configuration
+      this.skylink = new Skylink();
+      
+      // Set up event handlers
+      this.skylink.on('connected', (peerId, peerInfo, isSelf) => {
+        if (isSelf) {
+          this.peerId = peerId;
+          console.log('Connected to room with peer ID:', peerId);
+          resolve(peerId);
+        }
+      });
+      
+      this.skylink.on('peerJoined', (peerId, peerInfo, isSelf) => {
+        if (!isSelf) {
+          console.log('Peer joined:', peerId, peerInfo);
+          this._notifyListeners('peerJoined', { peerId, peerInfo });
+        }
+      });
+      
+      this.skylink.on('peerLeft', (peerId, peerInfo, isSelf) => {
+        if (!isSelf) {
+          console.log('Peer left:', peerId);
+          this._notifyListeners('peerLeft', { peerId, peerInfo });
+        }
+      });
+      
+      this.skylink.on('dataTransferStatus', (dataTransferInfo) => {
+        this._notifyListeners('fileTransfer', dataTransferInfo);
+      });
+      
+      this.skylink.on('incomingDataTransfer', (dataTransferInfo) => {
+        this._notifyListeners('incomingFile', dataTransferInfo);
+      });
+      
+      this.skylink.on('dataTransferData', (data) => {
+        this._notifyListeners('message', data);
+      });
+      
+      // Initialize and connect to room
+      this.skylink.init({
+        appKey: appKey,
+        secret: appSecret,
+        defaultRoom: {
+          name: roomName,
+          userData: userData
+        }
+      });
+    });
+  }
+  
+  _notifyListeners(event, data) {
+    if (this.roomListeners.has(event)) {
+      this.roomListeners.get(event).forEach(callback => callback(data));
+    }
+  }
+  
+  addListener(event, callback) {
+    if (!this.roomListeners.has(event)) {
+      this.roomListeners.set(event, []);
+    }
+    this.roomListeners.get(event).push(callback);
+  }
+  
+  sendMessage(peerId, message) {
+    // Send through data channel
+    this.skylink.sendData(peerId, {
+      type: 'message',
+      content: message,
+      timestamp: Date.now()
+    });
+  }
+  
+  sendFile(peerId, file) {
+    this.skylink.sendFile(peerId, file);
+  }
+  
+  disconnect() {
+    if (this.skylink) {
+      this.skylink.leaveRoom();
+    }
+  }
+}
+
+export default new SkylinkService();
+Phase 2: Dual-Interface Implementation
+Step 4: Create the "Sky" Controller Interface
+jsx
+// src/pages/SkyPortal.jsx
+import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import skylinkService from '../services/skylinkService';
+import FileTransfer from '../components/FileTransfer';
+import RemoteControlPanel from '../components/RemoteControlPanel';
+import './SkyPortal.css';
+
+const SkyPortal = () => {
+  const [connectionStatus, setConnectionStatus] = useState('disconnected');
+  const [peerConnected, setPeerConnected] = useState(false);
+  const [peerInfo, setPeerInfo] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [inputMessage, setInputMessage] = useState('');
+  const [files, setFiles] = useState([]);
+  const [remoteStream, setRemoteStream] = useState(null);
+  const [controlMode, setControlMode] = useState('chat'); // 'chat', 'files', 'remote'
+  
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    // Generate unique room name for this session
+    const roomName = `skylink_${Math.random().toString(36).substring(2, 10)}`;
+    const userData = { role: 'sky', name: 'Sky Controller' };
+    
+    // Initialize connection
+    const appKey = process.env.REACT_APP_SKYLINK_APP_KEY;
+    const appSecret = process.env.REACT_APP_SKYLINK_APP_SECRET;
+    
+    skylinkService.initialize(appKey, appSecret, roomName, userData)
+      .then(peerId => {
+        setConnectionStatus('connected');
+        console.log('Sky portal connected with ID:', peerId);
+        
+        // Generate sharing link for Link portal
+        const shareableLink = `${window.location.origin}/link/${roomName}`;
+        console.log('Share this link with Link:', shareableLink);
+        // You can display this as a QR code or shareable URL
+        
+        // Store room info for sharing
+        localStorage.setItem('skylink_room', roomName);
+      })
+      .catch(err => {
+        console.error('Connection failed:', err);
+        setConnectionStatus('error');
+      });
+    
+    // Set up listeners
+    skylinkService.addListener('peerJoined', ({ peerId, peerInfo }) => {
+      setPeerConnected(true);
+      setPeerInfo(peerInfo);
+      setMessages(prev => [...prev, { 
+        type: 'system', 
+        content: `Link connected: ${peerInfo.name || 'Unknown'}` 
+      }]);
+    });
+    
+    skylinkService.addListener('peerLeft', () => {
+      setPeerConnected(false);
+      setPeerInfo(null);
+      setMessages(prev => [...prev, { 
+        type: 'system', 
+        content: 'Link disconnected' 
+      }]);
+    });
+    
+    skylinkService.addListener('message', (data) => {
+      if (data.type === 'message') {
+        setMessages(prev => [...prev, { 
+          type: 'peer', 
+          content: data.content,
+          timestamp: new Date(data.timestamp).toLocaleTimeString()
+        }]);
+      }
+    });
+    
+    return () => {
+      skylinkService.disconnect();
+    };
+  }, []);
+
+  const sendMessage = () => {
+    if (inputMessage.trim() && peerConnected) {
+      skylinkService.sendMessage('all', inputMessage);
+      setMessages(prev => [...prev, { 
+        type: 'self', 
+        content: inputMessage,
+        timestamp: new Date().toLocaleTimeString()
+      }]);
+      setInputMessage('');
+    }
+  };
+
+  const handleFileSelect = (file) => {
+    skylinkService.sendFile('all', file);
+    setFiles(prev => [...prev, { name: file.name, status: 'sending' }]);
+  };
+
+  return (
+    <div className="sky-portal">
+      <header className="portal-header">
+        <h1>🌤️ Sky Portal (Controller)</h1>
+        <div className="connection-status">
+          Status: <span className={`status-${connectionStatus}`}>
+            {connectionStatus === 'connected' ? '✅ Connected to Skylink' : 
+             connectionStatus === 'error' ? '❌ Connection Error' : '⏳ Connecting...'}
+          </span>
+          {peerConnected && <span className="peer-badge">🔗 Link Connected</span>}
+        </div>
+        {connectionStatus === 'connected' && !peerConnected && (
+          <div className="invite-section">
+            <p>Share this link with Link to connect:</p>
+            <code>{`${window.location.origin}/link/${localStorage.getItem('skylink_room')}`}</code>
+            <button onClick={() => navigator.clipboard.writeText(
+              `${window.location.origin}/link/${localStorage.getItem('skylink_room')}`
+            )}>Copy Link</button>
+          </div>
+        )}
+      </header>
+      
+      <div className="portal-main">
+        <nav className="mode-selector">
+          <button 
+            className={controlMode === 'chat' ? 'active' : ''} 
+            onClick={() => setControlMode('chat')}
+          >💬 Chat</button>
+          <button 
+            className={controlMode === 'files' ? 'active' : ''} 
+            onClick={() => setControlMode('files')}
+          >📁 File Transfer</button>
+          <button 
+            className={controlMode === 'remote' ? 'active' : ''} 
+            onClick={() => setControlMode('remote')}
+          >🖥️ Remote Control</button>
+        </nav>
+        
+        <div className="content-area">
+          {controlMode === 'chat' && (
+            <div className="chat-interface">
+              <div className="messages-container">
+                {messages.map((msg, idx) => (
+                  <div key={idx} className={`message ${msg.type}`}>
+                    {msg.type !== 'system' && <span className="timestamp">{msg.timestamp}</span>}
+                    <span className="content">{msg.content}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="message-input">
+                <input 
+                  type="text" 
+                  value={inputMessage}
+                  onChange={(e) => setInputMessage(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                  placeholder="Type a message..."
+                  disabled={!peerConnected}
+                />
+                <button onClick={sendMessage} disabled={!peerConnected}>Send</button>
+              </div>
+            </div>
+          )}
+          
+          {controlMode === 'files' && (
+            <FileTransfer 
+              onFileSelect={handleFileSelect}
+              files={files}
+              peerConnected={peerConnected}
+            />
+          )}
+          
+          {controlMode === 'remote' && (
+            <RemoteControlPanel 
+              remoteStream={remoteStream}
+              peerConnected={peerConnected}
+              onControlCommand={(command) => {
+                skylinkService.sendMessage('all', {
+                  type: 'remote-control',
+                  command: command
+                });
+              }}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default SkyPortal;
+Step 5: Create the "Link" Device Interface
+jsx
+// src/pages/LinkPortal.jsx
+import React, { useState, useEffect, useRef } from 'react';
+import { useParams } from 'react-router-dom';
+import skylinkService from '../services/skylinkService';
+import ScreenShare from '../components/ScreenShare';
+import './LinkPortal.css';
+
+const LinkPortal = () => {
+  const { roomId } = useParams();
+  const [connectionStatus, setConnectionStatus] = useState('disconnected');
+  const [controllerConnected, setControllerConnected] = useState(false);
+  const [incomingFiles, setIncomingFiles] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [remoteCommands, setRemoteCommands] = useState([]);
+  
+  const localVideoRef = useRef(null);
+
+  useEffect(() => {
+    if (!roomId) {
+      console.error('No room ID provided');
+      return;
+    }
+
+    const appKey = process.env.REACT_APP_SKYLINK_APP_KEY;
+    const appSecret = process.env.REACT_APP_SKYLINK_APP_SECRET;
+    const userData = { role: 'link', name: 'Link Device' };
+    
+    skylinkService.initialize(appKey, appSecret, roomId, userData)
+      .then(peerId => {
+        setConnectionStatus('connected');
+        console.log('Link portal connected with ID:', peerId);
+      })
+      .catch(err => {
+        console.error('Connection failed:', err);
+        setConnectionStatus('error');
+      });
+    
+    // Set up listeners
+    skylinkService.addListener('peerJoined', ({ peerId, peerInfo }) => {
+      if (peerInfo.role === 'sky') {
+        setControllerConnected(true);
+        setMessages(prev => [...prev, { 
+          type: 'system', 
+          content: 'Sky controller connected' 
+        }]);
+      }
+    });
+    
+    skylinkService.addListener('peerLeft', ({ peerInfo }) => {
+      if (peerInfo && peerInfo.role === 'sky') {
+        setControllerConnected(false);
+        setMessages(prev => [...prev, { 
+          type: 'system', 
+          content: 'Sky controller disconnected' 
+        }]);
+      }
+    });
+    
+    skylinkService.addListener('message', (data) => {
+      if (data.type === 'message') {
+        setMessages(prev => [...prev, { 
+          type: 'peer', 
+          content: data.content,
+          timestamp: new Date(data.timestamp).toLocaleTimeString()
+        }]);
+      } else if (data.type === 'remote-control') {
+        setRemoteCommands(prev => [...prev, data.command]);
+        // Execute remote command on device
+        executeRemoteCommand(data.command);
+      }
+    });
+    
+    skylinkService.addListener('incomingFile', (fileInfo) => {
+      setIncomingFiles(prev => [...prev, fileInfo]);
+    });
+    
+    return () => {
+      skylinkService.disconnect();
+    };
+  }, [roomId]);
+
+  const executeRemoteCommand = (command) => {
+    // This would interface with device APIs
+    // For web, this is limited - you'd need a native app for full control
+    console.log('Executing remote command:', command);
+    
+    switch(command.type) {
+      case 'scroll':
+        window.scrollBy(0, command.y);
+        break;
+      case 'click':
+        // Simulate click at coordinates (requires native integration)
+        break;
+      case 'keyboard':
+        // Simulate keyboard input (requires native integration)
+        break;
+      default:
+        console.log('Unknown command:', command);
+    }
+  };
+
+  const acceptFile = (fileInfo) => {
+    skylinkService.acceptFileTransfer(fileInfo.transferId);
+  };
+
+  return (
+    <div className="link-portal">
+      <header className="portal-header">
+        <h1>🔗 Link Portal (Device)</h1>
+        <div className="connection-status">
+          Status: <span className={`status-${connectionStatus}`}>
+            {connectionStatus === 'connected' ? '✅ Connected to Skylink' : 
+             connectionStatus === 'error' ? '❌ Connection Error' : '⏳ Connecting...'}
+          </span>
+          {controllerConnected && <span className="peer-badge">🌤️ Sky Connected</span>}
+        </div>
+      </header>
+      
+      <div className="portal-main">
+        <div className="device-info">
+          <h3>Device Status</h3>
+          <p>Room: {roomId}</p>
+          <p>Screen Sharing: {isScreenSharing ? 'Active' : 'Inactive'}</p>
+          <button 
+            onClick={() => setIsScreenSharing(!isScreenSharing)}
+            disabled={!controllerConnected}
+          >
+            {isScreenSharing ? 'Stop Screen Share' : 'Start Screen Share'}
+          </button>
+        </div>
+        
+        {isScreenSharing && (
+          <ScreenShare 
+            onStream={(stream) => {
+              // Send stream to Sky controller
+              skylinkService.addStream(stream);
+            }}
+          />
+        )}
+        
+        <div className="messages-section">
+          <h3>Messages from Sky</h3>
+          <div className="messages-container">
+            {messages.map((msg, idx) => (
+              <div key={idx} className={`message ${msg.type}`}>
+                <span className="content">{msg.content}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        
+        <div className="files-section">
+          <h3>Incoming Files</h3>
+          <div className="file-list">
+            {incomingFiles.map((file, idx) => (
+              <div key={idx} className="file-item">
+                <span>{file.name} ({Math.round(file.size/1024)} KB)</span>
+                <button onClick={() => acceptFile(file)}>Accept</button>
+              </div>
+            ))}
+          </div>
+        </div>
+        
+        <div className="commands-section">
+          <h3>Remote Commands Received</h3>
+          <div className="command-list">
+            {remoteCommands.slice(-5).map((cmd, idx) => (
+              <div key={idx} className="command-item">
+                {JSON.stringify(cmd)}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default LinkPortal;
+Phase 3: Advanced Features Implementation
+Step 6: File Transfer Component
+jsx
+// src/components/FileTransfer.jsx
+import React, { useState, useRef } from 'react';
+import './FileTransfer.css';
+
+const FileTransfer = ({ onFileSelect, files, peerConnected }) => {
+  const [dragActive, setDragActive] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const handleDrag = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setDragActive(true);
+    } else if (e.type === "dragleave") {
+      setDragActive(false);
+    }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      handleFiles(e.dataTransfer.files);
+    }
+  };
+
+  const handleFiles = (fileList) => {
+    Array.from(fileList).forEach(file => {
+      onFileSelect(file);
+    });
+  };
+
+  const handleButtonClick = () => {
+    fileInputRef.current.click();
+  };
+
+  const getFileIcon = (filename) => {
+    const ext = filename.split('.').pop().toLowerCase();
+    if (['jpg', 'jpeg', 'png', 'gif'].includes(ext)) return '🖼️';
+    if (['mp4', 'mov', 'avi'].includes(ext)) return '🎬';
+    if (['mp3', 'wav'].includes(ext)) return '🎵';
+    if (['pdf'].includes(ext)) return '📄';
+    if (['doc', 'docx'].includes(ext)) return '📝';
+    if (['zip', 'rar'].includes(ext)) return '🗜️';
+    return '📁';
+  };
+
+  return (
+    <div className="file-transfer">
+      <div 
+        className={`drop-zone ${dragActive ? 'active' : ''} ${!peerConnected ? 'disabled' : ''}`}
+        onDragEnter={handleDrag}
+        onDragLeave={handleDrag}
+        onDragOver={handleDrag}
+        onDrop={handleDrop}
+        onClick={handleButtonClick}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          onChange={(e) => handleFiles(e.target.files)}
+          style={{ display: 'none' }}
+          disabled={!peerConnected}
+        />
+        <div className="drop-zone-content">
+          <span className="icon">📤</span>
+          <p>Drag & drop files here or click to select</p>
+          {!peerConnected && <p className="warning">Connect to Link first</p>}
+        </div>
+      </div>
+      
+      <div className="file-list">
+        <h3>Transfer Queue</h3>
+        {files.map((file, index) => (
+          <div key={index} className="file-item">
+            <span className="file-icon">{getFileIcon(file.name)}</span>
+            <span className="file-name">{file.name}</span>
+            <span className="file-status">{file.status}</span>
+            {file.status === 'sending' && (
+              <progress value={file.progress || 0} max="100" />
+            )}
+          </div>
+        ))}
+        {files.length === 0 && (
+          <p className="empty-state">No files in transfer queue</p>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default FileTransfer;
+Step 7: Remote Control Protocol Implementation
+jsx
+// src/components/RemoteControlPanel.jsx
+import React, { useState, useEffect, useRef } from 'react';
+import './RemoteControlPanel.css';
+
+const RemoteControlPanel = ({ remoteStream, peerConnected, onControlCommand }) => {
+  const [controlMode, setControlMode] = useState('mouse'); // mouse, keyboard, gestures
+  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
+  const [isDrawing, setIsDrawing] = useState(false);
+  const canvasRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+
+  useEffect(() => {
+    if (remoteStream && remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = remoteStream;
+    }
+  }, [remoteStream]);
+
+  const handleMouseMove = (e) => {
+    if (!peerConnected) return;
+    
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    
+    setMousePosition({ x, y });
+    
+    if (controlMode === 'mouse') {
+      onControlCommand({
+        type: 'mouse-move',
+        x: x,
+        y: y
+      });
+    }
+  };
+
+  const handleMouseClick = (e) => {
+    if (!peerConnected) return;
+    
+    onControlCommand({
+      type: 'mouse-click',
+      button: e.button,
+      x: mousePosition.x,
+      y: mousePosition.y
+    });
+  };
+
+  const handleKeyDown = (e) => {
+    if (!peerConnected || controlMode !== 'keyboard') return;
+    
+    onControlCommand({
+      type: 'keyboard',
+      key: e.key,
+      code: e.code,
+      altKey: e.altKey,
+      ctrlKey: e.ctrlKey,
+      shiftKey: e.shiftKey
+    });
+  };
+
+  const handleTouchStart = (e) => {
+    if (!peerConnected || controlMode !== 'gestures') return;
+    
+    const touch = e.touches[0];
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((touch.clientX - rect.left) / rect.width) * 100;
+    const y = ((touch.clientY - rect.top) / rect.height) * 100;
+    
+    setIsDrawing(true);
+    
+    onControlCommand({
+      type: 'touch-start',
+      x: x,
+      y: y,
+      force: touch.force || 0.5
+    });
+  };
+
+  const handleTouchMove = (e) => {
+    if (!peerConnected || controlMode !== 'gestures' || !isDrawing) return;
+    e.preventDefault();
+    
+    const touch = e.touches[0];
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((touch.clientX - rect.left) / rect.width) * 100;
+    const y = ((touch.clientY - rect.top) / rect.height) * 100;
+    
+    onControlCommand({
+      type: 'touch-move',
+      x: x,
+      y: y
+    });
+  };
+
+  const handleTouchEnd = () => {
+    setIsDrawing(false);
+    onControlCommand({ type: 'touch-end' });
+  };
+
+  return (
+    <div className="remote-control-panel">
+      <div className="control-header">
+        <h3>Remote Control Interface</h3>
+        <div className="mode-selector">
+          <button 
+            className={controlMode === 'mouse' ? 'active' : ''}
+            onClick={() => setControlMode('mouse')}
+          >🖱️ Mouse</button>
+          <button 
+            className={controlMode === 'keyboard' ? 'active' : ''}
+            onClick={() => setControlMode('keyboard')}
+          >⌨️ Keyboard</button>
+          <button 
+            className={controlMode === 'gestures' ? 'active' : ''}
+            onClick={() => setControlMode('gestures')}
+          >👆 Gestures</button>
+        </div>
+      </div>
+      
+      <div className="remote-screen">
+        {remoteStream ? (
+          <video 
+            ref={remoteVideoRef}
+            autoPlay
+            playsInline
+            className="remote-video"
+          />
+        ) : (
+          <div className="remote-placeholder">
+            <div className="placeholder-content">
+              <span className="icon">📱</span>
+              <p>Waiting for Link to share screen...</p>
+              {!peerConnected && (
+                <p className="hint">Connect to Link to enable remote control</p>
+              )}
+            </div>
+          </div>
+        )}
+        
+        {/* Overlay for mouse/touch interaction */}
+        {peerConnected && remoteStream && (
+          <div 
+            className="interaction-overlay"
+            onMouseMove={handleMouseMove}
+            onClick={handleMouseClick}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            tabIndex={0}
+            onKeyDown={handleKeyDown}
+          >
+            {controlMode === 'mouse' && (
+              <div 
+                className="mouse-cursor"
+                style={{ left: `${mousePosition.x}%`, top: `${mousePosition.y}%` }}
+              >
+                🖱️
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      
+      <div className="control-tips">
+        <h4>Current Mode: {controlMode}</h4>
+        {controlMode === 'mouse' && (
+          <p>Move mouse to control cursor, click to tap</p>
+        )}
+        {controlMode === 'keyboard' && (
+          <p>Click on the screen and start typing</p>
+        )}
+        {controlMode === 'gestures' && (
+          <p>Touch and drag on screen to draw gestures</p>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default RemoteControlPanel;
+Step 8: Screen Sharing Component for Link
+jsx
+// src/components/ScreenShare.jsx
+import React, { useEffect, useRef } from 'react';
+
+const ScreenShare = ({ onStream }) => {
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    let stream = null;
+    
+    const startScreenShare = async () => {
+      try {
+        // Request screen capture
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            cursor: "always"
+          },
+          audio: false
+        });
+        
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+        
+        // Pass stream to parent for sending via Skylink
+        onStream(stream);
+        
+        // Handle when user stops sharing
+        stream.getVideoTracks()[0].onended = () => {
+          console.log('Screen sharing ended');
+          onStream(null);
+        };
+        
+      } catch (err) {
+        console.error('Error sharing screen:', err);
+      }
+    };
+    
+    startScreenShare();
+    
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [onStream]);
+
+  return (
+    <div className="screen-share">
+      <video 
+        ref={videoRef}
+        autoPlay 
+        playsInline
+        className="screen-video"
+      />
+    </div>
+  );
+};
+
+export default ScreenShare;
+Phase 4: Application Routing & Integration
+Step 9: Main App Component with Routing
+jsx
+// src/App.js
+import React from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import SkyPortal from './pages/SkyPortal';
+import LinkPortal from './pages/LinkPortal';
+import LandingPage from './pages/LandingPage';
+import './App.css';
+
+function App() {
+  return (
+    <Router>
+      <div className="App">
+        <Routes>
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/sky" element={<SkyPortal />} />
+          <Route path="/link/:roomId" element={<LinkPortal />} />
+          <Route path="*" element={<Navigate to="/" />} />
+        </Routes>
+      </div>
+    </Router>
+  );
+}
+
+export default App;
+Step 10: Landing Page with Mode Selection
+jsx
+// src/pages/LandingPage.jsx
+import React from 'react';
+import { useNavigate } from 'react-router-dom';
+import './LandingPage.css';
+
+const LandingPage = () => {
+  const navigate = useNavigate();
+
+  return (
+    <div className="landing-page">
+      <div className="hero-section">
+        <h1>🌤️ SkyLink</h1>
+        <p className="tagline">Connect. Share. Control.</p>
+        <p className="description">
+          SkyLink creates a direct peer-to-peer bridge between two devices—Sky (controller) and Link (device)—enabling seamless media sharing, file transfer, and remote screen control.
+        </p>
+      </div>
+      
+      <div className="mode-selection">
+        <div className="mode-card sky-mode" onClick={() => navigate('/sky')}>
+          <div className="card-icon">🌤️</div>
+          <h2>I am Sky</h2>
+          <p>The controller interface</p>
+          <ul>
+            <li>Create a new connection</li>
+            <li>Send files and messages</li>
+            <li>Control remote device</li>
+          </ul>
+          <button className="sky-button">Start as Sky</button>
+        </div>
+        
+        <div className="mode-card link-mode" onClick={() => {
+          // Generate or prompt for room ID
+          const roomId = prompt('Enter the SkyLink room ID:');
+          if (roomId) navigate(`/link/${roomId}`);
+        }}>
+          <div className="card-icon">🔗</div>
+          <h2>I am Link</h2>
+          <p>The device interface</p>
+          <ul>
+            <li>Connect to an existing room</li>
+            <li>Share your screen</li>
+            <li>Receive files and messages</li>
+          </ul>
+          <button className="link-button">Connect as Link</button>
+        </div>
+      </div>
+      
+      <div className="how-it-works">
+        <h3>How SkyLink Works</h3>
+        <div className="steps">
+          <div className="step">
+            <span className="step-number">1</span>
+            <p>Sky creates a room and shares the link</p>
+          </div>
+          <div className="step">
+            <span className="step-number">2</span>
+            <p>Link joins using the shared room ID</p>
+          </div>
+          <div className="step">
+            <span className="step-number">3</span>
+            <p>Direct peer-to-peer connection established</p>
+          </div>
+          <div className="step">
+            <span className="step-number">4</span>
+            <p>Start sharing, chatting, and controlling</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default LandingPage;
+Phase 5: Deployment & Testing
+Step 11: Configuration and Environment Setup
+Create a .env file in your project root:
+
+text
+REACT_APP_SKYLINK_APP_KEY=your_temasys_app_key
+REACT_APP_SKYLINK_APP_SECRET=your_temasys_app_secret
+REACT_APP_SKYLINK_SERVER=wss://skylink.temasys.io
+Step 12: Build and Deploy
+bash
+# Build the production version
+npm run build
+
+# Test locally first
+npx serve -s build
+
+# Deploy to your preferred hosting platform
+# Examples: Vercel, Netlify, AWS Amplify
+For deployment, you can use platforms like Vercel or Netlify for easy hosting. The application is client-side only, so static hosting works perfectly.
+
+Important Considerations & Limitations
+Web-Based Remote Control Limitations
+Important: Full remote device control (like tapping apps, accessing system functions) requires a native mobile application paired with your web interface. The web version demonstrated here provides:
+
+Screen sharing from Link to Sky
+
+Mouse/keyboard simulation within the browser context
+
+Basic gesture recognition
+
+For true device control (similar to TeamViewer), you'll need to build companion native apps using:
+
+Android: Skylink Android SDK 
+
+iOS: Skylink iOS SDK 
+
+React Native: Skylink React Native SDK for cross-platform 
+
+Privacy & Security
+All communication is peer-to-peer and encrypted via WebRTC
+
+No messages or files pass through your servers
+
+The signaling server only helps establish the connection 
+
+Users must explicitly share their screen - cannot be forced remotely
+
+Performance Optimization
+For large file transfers, implement chunking and resume capability
+
+Consider bandwidth limitations - WebRTC adapts to network conditions
+
+For production, implement reconnection logic and error boundaries
+
+Summary
+This SkyLink implementation provides a complete foundation for a dual-interface peer-to-peer communication system. The key achievements are:
+
+Dual Interface Architecture: Separate "Sky" (controller) and "Link" (device) experiences with shared underlying connection logic
+
+Real-time Communication: Powered by SkylinkJS WebRTC SDK for low-latency peer-to-peer data transfer 
+
+Multi-modal Interaction: Chat, file transfer, and remote control capabilities
+
+Screen Sharing: Link devices can broadcast their screen to Sky controllers
+
+Extensible Design: Clear separation of concerns makes adding new features straightforward
+
+The system demonstrates how two web clients can form a direct "SkyLink" connection, enabling the kind of device interaction seen in WhatsApp Web while adding advanced features like file transfer and screen control. For full mobile device control, extend this foundation with the native Skylink SDKs for Android and iOS .
