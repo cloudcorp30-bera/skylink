@@ -11,6 +11,12 @@ const pool = DB_URL
   ? new Pool({ connectionString: DB_URL, ssl: { rejectUnauthorized: false } })
   : null;
 
+// CRITICAL: without this handler Node.js will crash when the DB admin
+// terminates an idle pooled connection and pg emits an 'error' event.
+pool?.on("error", (err) => {
+  console.error("[DB] Pool client error (non-fatal):", err.message);
+});
+
 // Dedicated listener client — LISTEN/NOTIFY requires a persistent connection
 let listenerClient: Client | null = null;
 
@@ -88,15 +94,47 @@ function genId() {
 
 const NOTIFY_CHANNEL = "skylink_relay";
 
+let listenerReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleListenerReconnect() {
+  if (listenerReconnectTimer) return; // already scheduled
+  listenerReconnectTimer = setTimeout(() => {
+    listenerReconnectTimer = null;
+    setupListener();
+  }, 5000);
+}
+
 async function setupListener() {
   if (!DB_URL) return;
+
+  // Tear down any existing broken client first
+  if (listenerClient) {
+    const old = listenerClient;
+    listenerClient = null;
+    old.removeAllListeners();
+    try { await old.end(); } catch {}
+  }
+
+  const client = new Client({ connectionString: DB_URL, ssl: { rejectUnauthorized: false } });
+
+  // Attach error handler BEFORE connect() to avoid unhandled-error crashes
+  client.on("error", (e) => {
+    console.error("[DB] Listener error:", e.message);
+    scheduleListenerReconnect();
+  });
+
+  client.on("end", () => {
+    console.warn("[DB] Listener connection ended — will reconnect");
+    scheduleListenerReconnect();
+  });
+
   try {
-    listenerClient = new Client({ connectionString: DB_URL, ssl: { rejectUnauthorized: false } });
-    await listenerClient.connect();
-    await listenerClient.query(`LISTEN ${NOTIFY_CHANNEL}`);
+    await client.connect();
+    await client.query(`LISTEN ${NOTIFY_CHANNEL}`);
+    listenerClient = client;
     console.log("[DB] LISTEN ready on channel:", NOTIFY_CHANNEL);
 
-    listenerClient.on("notification", (n) => {
+    client.on("notification", (n) => {
       if (!n.payload) return;
       try {
         const { roomId, msg, originInstance } = JSON.parse(n.payload) as {
@@ -104,20 +142,14 @@ async function setupListener() {
           msg: string;
           originInstance: string;
         };
-        // Ignore messages that originated from this instance
         if (originInstance === INSTANCE_ID) return;
         deliverLocally(null, roomId, msg);
       } catch {}
     });
-
-    listenerClient.on("error", (e) => {
-      console.error("[DB] Listener error:", e.message);
-      // Reconnect after 5 seconds
-      setTimeout(setupListener, 5000);
-    });
   } catch (e) {
     console.error("[DB] Could not start listener:", (e as Error).message);
-    setTimeout(setupListener, 5000);
+    try { await client.end(); } catch {}
+    scheduleListenerReconnect();
   }
 }
 
