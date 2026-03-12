@@ -1,4 +1,6 @@
 import { Feather } from "@expo/vector-icons";
+import { Audio } from "expo-av";
+import * as FileSystem from "expo-file-system";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
@@ -15,6 +17,7 @@ import {
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import type { CameraType } from "expo-camera";
 import { CameraStream } from "@/components/CameraStream";
 import { ChatInput } from "@/components/ChatInput";
 import { ContactsShare } from "@/components/ContactsShare";
@@ -65,7 +68,7 @@ const ALL_TABS: { key: TabKey; icon: keyof typeof Feather.glyphMap; label: strin
   { key: "macro",    icon: "grid",           label: "Macros" },
   { key: "capture",  icon: "camera",         label: "Screen" },
   { key: "log",      icon: "list",           label: "Log" },
-  { key: "commander", icon: "command",        label: "Command", skyOnly: true },
+  { key: "commander", icon: "command",       label: "Command", skyOnly: true },
   { key: "dashboard", icon: "cpu",           label: "Device" },
   { key: "remote",    icon: "terminal",      label: "Remote", skyOnly: true },
   { key: "info",      icon: "info",          label: "Info" },
@@ -84,18 +87,27 @@ export default function SessionScreen() {
     connectToRoom, disconnectFromRoom,
     sendChatMessage, onMessageReceived,
     sendControl, onControlReceived,
-    transfers,
+    transfers, emitEvent, onEvent, sendFile,
   } = useTransfer();
 
   const [activeTab, setActiveTab] = useState<TabKey>("chat");
   const [messages, setMessages] = useState<Message[]>([]);
   const hasConnectedRef = useRef(false);
 
+  // ── Global walkie-talkie audio (plays on any tab) ─────────────────────────
+  const [peerSpeaking, setPeerSpeaking] = useState(false);
+  const audioSoundRef = useRef<Audio.Sound | null>(null);
+  const peerSpeakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Camera remote control state ───────────────────────────────────────────
+  const [cameraAutoStart, setCameraAutoStart] = useState(false);
+  const [cameraExternalFacing, setCameraExternalFacing] = useState<CameraType | undefined>(undefined);
+
   const topInset = Platform.OS === "web" ? Math.max(insets.top, 67) : insets.top;
   const bottomInset = Platform.OS === "web" ? Math.max(insets.bottom, 34) : insets.bottom;
   const isSky = role === "sky";
   const accentColor = isSky ? Colors.primary : Colors.accent;
-  const isPeerConnected = peerPresent;
+  const isPeerConn = peerPresent;
 
   const addMessage = useCallback((
     type: Message["type"], content: string, sender: Message["sender"], extras?: Partial<Message>
@@ -103,6 +115,7 @@ export default function SessionScreen() {
     setMessages(prev => [{ id: generateId(), type, content, sender, timestamp: Date.now(), ...extras }, ...prev]);
   }, []);
 
+  // ── Connect on mount ───────────────────────────────────────────────────────
   useEffect(() => {
     if (!roomId || !role || hasConnectedRef.current) return;
     hasConnectedRef.current = true;
@@ -111,7 +124,6 @@ export default function SessionScreen() {
   }, [roomId, role]);
 
   useEffect(() => onMessageReceived(msg => addMessage("text", msg.content, "peer")), [onMessageReceived, addMessage]);
-
   useEffect(() => onControlReceived(cmd => addMessage("control", `Received: ${cmd.command}`, "peer", { controlCommand: cmd.command })), [onControlReceived, addMessage]);
 
   const prevPeerRef = useRef(false);
@@ -123,6 +135,97 @@ export default function SessionScreen() {
     }
     prevPeerRef.current = peerPresent;
   }, [peerPresent]);
+
+  // ── Global audio listener — plays walkie-talkie audio on ANY tab ──────────
+  useEffect(() => {
+    Audio.setAudioModeAsync({ playsInSilentModeIOS: true, shouldDuckAndroid: true }).catch(() => {});
+
+    const unsub = onEvent("audio-chunk", async (data: { chunk: string }) => {
+      try {
+        if (audioSoundRef.current) {
+          await audioSoundRef.current.unloadAsync();
+          audioSoundRef.current = null;
+        }
+        const { sound } = await Audio.Sound.createAsync(
+          { uri: `data:audio/m4a;base64,${data.chunk}` },
+          { shouldPlay: true, volume: 1.0 }
+        );
+        audioSoundRef.current = sound;
+        setPeerSpeaking(true);
+        if (peerSpeakingTimerRef.current) clearTimeout(peerSpeakingTimerRef.current);
+        peerSpeakingTimerRef.current = setTimeout(() => setPeerSpeaking(false), 2500);
+        sound.setOnPlaybackStatusUpdate((s) => {
+          if ("didJustFinish" in s && s.didJustFinish) {
+            setPeerSpeaking(false);
+            sound.unloadAsync().catch(() => {});
+          }
+        });
+      } catch {}
+    });
+
+    return () => {
+      unsub();
+      audioSoundRef.current?.unloadAsync().catch(() => {});
+      if (peerSpeakingTimerRef.current) clearTimeout(peerSpeakingTimerRef.current);
+    };
+  }, [onEvent]);
+
+  // ── Camera request stream — navigate + auto-start streaming ───────────────
+  useEffect(() => {
+    const unsub = onEvent("camera-request-stream", () => {
+      setActiveTab("camera");
+      setCameraAutoStart(true);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    });
+    return () => unsub();
+  }, [onEvent]);
+
+  // ── Camera remote facing switch from this device ──────────────────────────
+  useEffect(() => {
+    const unsub = onEvent("camera-switch-facing", () => {
+      setCameraExternalFacing(f => f === "front" ? "back" : "front");
+    });
+    return () => unsub();
+  }, [onEvent]);
+
+  // ── Peer browse-files request: respond with our local SkyLink cache ────────
+  useEffect(() => {
+    const unsub = onEvent("browse-files-request", async (data: { requestId: string }) => {
+      try {
+        const FS = FileSystem as any;
+        const dir = FS.cacheDirectory + "skylink/";
+        await FS.makeDirectoryAsync(dir, { intermediates: true });
+        const names: string[] = await FS.readDirectoryAsync(dir);
+        const files = await Promise.all(names.map(async (name: string) => {
+          const info = await FS.getInfoAsync(dir + name, { size: true });
+          return { name, size: info.size ?? 0, modTime: info.modificationTime ?? 0 };
+        }));
+        emitEvent("browse-files-response", { requestId: data.requestId, files });
+      } catch {
+        emitEvent("browse-files-response", { requestId: data.requestId, files: [] });
+      }
+    });
+    return () => unsub();
+  }, [onEvent, emitEvent]);
+
+  // ── Peer file-fetch request: send the requested file ──────────────────────
+  useEffect(() => {
+    const unsub = onEvent("file-fetch-request", async (data: { name: string; requestId: string }) => {
+      try {
+        const FS = FileSystem as any;
+        const uri = FS.cacheDirectory + "skylink/" + data.name;
+        const info = await FS.getInfoAsync(uri, { size: true });
+        if (!info.exists) {
+          emitEvent("file-fetch-error", { requestId: data.requestId, error: "File not found" });
+          return;
+        }
+        await sendFile(uri, data.name, info.size ?? 0, "application/octet-stream");
+      } catch (e) {
+        emitEvent("file-fetch-error", { requestId: data.requestId, error: "Failed to send" });
+      }
+    });
+    return () => unsub();
+  }, [onEvent, emitEvent, sendFile]);
 
   const handleRetry = useCallback(() => {
     if (!roomId || !role) return;
@@ -153,7 +256,6 @@ export default function SessionScreen() {
   };
 
   const visibleTabs = ALL_TABS.filter(t => !t.skyOnly || isSky);
-  const isPeerConn = isPeerConnected;
 
   const statusText = !socketConnected
     ? "Connecting to server..."
@@ -190,6 +292,14 @@ export default function SessionScreen() {
           <Text style={styles.retryText}>Not connected to server — tap to retry</Text>
           <Feather name="refresh-cw" size={14} color={Colors.warning} />
         </Pressable>
+      )}
+
+      {/* Peer speaking overlay — visible on any tab */}
+      {peerSpeaking && activeTab !== "voice" && (
+        <View style={styles.speakingToast}>
+          <Feather name="volume-2" size={14} color={Colors.accent} />
+          <Text style={styles.speakingToastText}>Peer is speaking</Text>
+        </View>
       )}
 
       {/* Tab Bar */}
@@ -234,11 +344,21 @@ export default function SessionScreen() {
         </KeyboardAvoidingView>
       )}
 
-      {activeTab === "voice"    && <VoiceWalkie      peerConnected={isPeerConn} bottomInset={bottomInset} />}
+      {activeTab === "voice" && (
+        <VoiceWalkie peerConnected={isPeerConn} bottomInset={bottomInset} peerSpeaking={peerSpeaking} />
+      )}
       {activeTab === "call"     && <WebRTCCall        role={role ?? "link"} peerConnected={isPeerConn} bottomInset={bottomInset} />}
       {activeTab === "files"    && <FileTransferPanel peerConnected={isPeerConn} bottomInset={bottomInset} />}
       {activeTab === "browse"   && <FileBrowser       peerConnected={isPeerConn} bottomInset={bottomInset} />}
-      {activeTab === "camera"   && <CameraStream      peerConnected={isPeerConn} bottomInset={bottomInset} />}
+      {activeTab === "camera"   && (
+        <CameraStream
+          peerConnected={isPeerConn}
+          bottomInset={bottomInset}
+          autoStart={cameraAutoStart}
+          externalFacing={cameraExternalFacing}
+          onAutoStartDone={() => setCameraAutoStart(false)}
+        />
+      )}
       {activeTab === "board"    && <WhiteboardPanel   peerConnected={isPeerConn} bottomInset={bottomInset} />}
       {activeTab === "location" && <LocationShare     peerConnected={isPeerConn} bottomInset={bottomInset} />}
       {activeTab === "controls" && <DeviceControls    role={role ?? "link"} peerConnected={isPeerConn} bottomInset={bottomInset} />}
@@ -270,8 +390,6 @@ export default function SessionScreen() {
       {/* Info */}
       {activeTab === "info" && (
         <ScrollView contentContainerStyle={[styles.scrollPad, { paddingBottom: bottomInset + 24 }]} showsVerticalScrollIndicator={false}>
-
-          {/* Connection Diagnostics */}
           <View style={[styles.infoCard, { borderColor: lastError ? Colors.danger : socketConnected ? Colors.success : Colors.warning, borderWidth: 1 }]}>
             <Text style={styles.infoCardTitle}>Connection Diagnostics</Text>
             <View style={styles.infoRow}>
@@ -311,17 +429,17 @@ export default function SessionScreen() {
           </View>
 
           <View style={styles.infoCard}>
-            <Text style={styles.infoCardTitle}>All 18 Features</Text>
+            <Text style={styles.infoCardTitle}>All 20 Features</Text>
             {[
               ["message-circle", "Real-Time Chat"],
-              ["mic",            "Walkie-Talkie (Push to Talk)"],
+              ["mic",            "Walkie-Talkie (background audio)"],
               ["phone",          "P2P WebRTC Audio/Video Call"],
               ["send",           "File Transfer (Chunked, 64KB)"],
-              ["folder",         "File Browser & Cache Manager"],
-              ["video",          "Live Camera Stream"],
+              ["folder",         "File Browser & Peer Files"],
+              ["video",          "Live Camera Stream (remote request)"],
               ["edit-3",         "Collaborative Whiteboard"],
               ["map-pin",        "GPS Location Sharing"],
-              ["sliders",        "Device Controls (Brightness, Vibrate, Ping)"],
+              ["sliders",        "Device Controls (Brightness, Torch, Vibrate)"],
               ["clipboard",      "Clipboard Sync"],
               ["activity",       "Sensor Logger (CSV Export)"],
               ["users",          "Contacts Sharing"],
@@ -330,7 +448,9 @@ export default function SessionScreen() {
               ["grid",           "Macro Pad (Custom Command Buttons)"],
               ["camera",         "Remote Screen Capture"],
               ["list",           "Session Log (JSON/CSV Export)"],
-              ["battery",        "Battery & Brightness Monitor"],
+              ["battery",        "Device Dashboard (Battery, Storage)"],
+              ["command",        "Remote Commander (30+ commands)"],
+              ["terminal",       "Remote Control Pad"],
             ].map(([icon, label]) => (
               <View key={label} style={styles.featureRow}>
                 <Feather name={icon as keyof typeof Feather.glyphMap} size={14} color={accentColor} />
@@ -368,6 +488,12 @@ const styles = StyleSheet.create({
   statusText: { fontFamily: "Inter_400Regular", fontSize: 12, color: Colors.textSecondary },
   rolePill: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, borderWidth: 1 },
   roleText: { fontFamily: "Inter_700Bold", fontSize: 11, letterSpacing: 1 },
+  speakingToast: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    backgroundColor: Colors.accent + "22", borderBottomWidth: 1, borderBottomColor: Colors.accent + "44",
+    paddingHorizontal: 16, paddingVertical: 8,
+  },
+  speakingToastText: { fontFamily: "Inter_500Medium", fontSize: 13, color: Colors.accent },
   tabsScroll: {
     borderBottomWidth: 1, borderBottomColor: Colors.border,
     backgroundColor: Colors.surface, flexGrow: 0, maxHeight: 48,

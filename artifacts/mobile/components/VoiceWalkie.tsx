@@ -18,17 +18,15 @@ const CHUNK_MS = 1200;
 interface VoiceWalkieProps {
   peerConnected: boolean;
   bottomInset?: number;
+  peerSpeaking?: boolean;
 }
 
-export function VoiceWalkie({ peerConnected, bottomInset = 0 }: VoiceWalkieProps) {
+export function VoiceWalkie({ peerConnected, bottomInset = 0, peerSpeaking = false }: VoiceWalkieProps) {
   const [permGranted, setPermGranted] = useState<boolean | null>(null);
   const [isRecording, setIsRecording] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [status, setStatus] = useState("Idle");
   const recordingRef = useRef<Audio.Recording | null>(null);
   const chunkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const soundRef = useRef<Audio.Sound | null>(null);
-  const { emitEvent, onEvent } = useTransfer();
+  const { emitEvent } = useTransfer();
 
   useEffect(() => {
     Audio.requestPermissionsAsync().then(({ granted }) => {
@@ -43,29 +41,6 @@ export function VoiceWalkie({ peerConnected, bottomInset = 0 }: VoiceWalkieProps
     });
   }, []);
 
-  useEffect(() => {
-    const unsub = onEvent("audio-chunk", async (data: { chunk: string }) => {
-      try {
-        setIsSpeaking(true);
-        if (soundRef.current) {
-          await soundRef.current.unloadAsync();
-          soundRef.current = null;
-        }
-        const { sound } = await Audio.Sound.createAsync(
-          { uri: `data:audio/m4a;base64,${data.chunk}` },
-          { shouldPlay: true, volume: 1.0 }
-        );
-        soundRef.current = sound;
-        sound.setOnPlaybackStatusUpdate((s) => {
-          if ("didJustFinish" in s && s.didJustFinish) setIsSpeaking(false);
-        });
-      } catch (e) {
-        setIsSpeaking(false);
-      }
-    });
-    return () => { unsub(); soundRef.current?.unloadAsync(); };
-  }, [onEvent]);
-
   const sendChunk = useCallback(async () => {
     const rec = recordingRef.current;
     if (!rec) return;
@@ -75,7 +50,7 @@ export function VoiceWalkie({ peerConnected, bottomInset = 0 }: VoiceWalkieProps
       recordingRef.current = null;
       if (uri) {
         const base64 = await (FileSystem as any).readAsStringAsync(uri, {
-          encoding: 'base64',
+          encoding: "base64",
         });
         emitEvent("audio-chunk", { chunk: base64 });
       }
@@ -89,7 +64,6 @@ export function VoiceWalkie({ peerConnected, bottomInset = 0 }: VoiceWalkieProps
   const startTalking = useCallback(async () => {
     if (!permGranted || !peerConnected) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    setStatus("Transmitting...");
     try {
       const rec = new Audio.Recording();
       await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
@@ -97,9 +71,7 @@ export function VoiceWalkie({ peerConnected, bottomInset = 0 }: VoiceWalkieProps
       recordingRef.current = rec;
       setIsRecording(true);
       chunkTimerRef.current = setInterval(sendChunk, CHUNK_MS);
-    } catch (e) {
-      setStatus("Error starting mic");
-    }
+    } catch {}
   }, [permGranted, peerConnected, sendChunk]);
 
   const stopTalking = useCallback(async () => {
@@ -109,7 +81,6 @@ export function VoiceWalkie({ peerConnected, bottomInset = 0 }: VoiceWalkieProps
       recordingRef.current = null;
     }
     setIsRecording(false);
-    setStatus("Idle");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   }, []);
 
@@ -135,10 +106,23 @@ export function VoiceWalkie({ peerConnected, bottomInset = 0 }: VoiceWalkieProps
   return (
     <View style={[styles.container, { paddingBottom: bottomInset }]}>
       <View style={styles.statusBar}>
-        <View style={[styles.statusDot, { backgroundColor: isSpeaking ? Colors.accent : isRecording ? Colors.danger : Colors.textSecondary }]} />
+        <View style={[styles.statusDot, {
+          backgroundColor: peerSpeaking ? Colors.accent : isRecording ? Colors.danger : Colors.textSecondary,
+        }]} />
         <Text style={styles.statusText}>
-          {isSpeaking ? "Peer is talking..." : isRecording ? "You are transmitting" : peerConnected ? "Ready — hold to talk" : "Waiting for peer..."}
+          {peerSpeaking
+            ? "Peer is talking..."
+            : isRecording
+            ? "You are transmitting"
+            : peerConnected
+            ? "Ready — hold to talk"
+            : "Waiting for peer..."}
         </Text>
+      </View>
+
+      <View style={styles.note}>
+        <Feather name="info" size={13} color={Colors.primary} />
+        <Text style={styles.noteText}>Audio plays on the peer's device even if they are on a different screen</Text>
       </View>
 
       <View style={styles.pttArea}>
@@ -157,7 +141,7 @@ export function VoiceWalkie({ peerConnected, bottomInset = 0 }: VoiceWalkieProps
         </Text>
       </View>
 
-      {isSpeaking && (
+      {peerSpeaking && (
         <View style={styles.speakingBanner}>
           <Feather name="volume-2" size={16} color={Colors.accent} />
           <Text style={styles.speakingText}>Peer is speaking</Text>
@@ -168,8 +152,8 @@ export function VoiceWalkie({ peerConnected, bottomInset = 0 }: VoiceWalkieProps
       <View style={styles.instructions}>
         {[
           { icon: "mic" as const, text: "Hold the button to transmit your voice" },
-          { icon: "volume-2" as const, text: "Release to stop — peer hears you in real time" },
-          { icon: "wifi" as const, text: "Audio relayed over WiFi via server" },
+          { icon: "volume-2" as const, text: "Release to stop — peer hears you anywhere in the app" },
+          { icon: "wifi" as const, text: "Audio relayed securely over the server" },
         ].map((item) => (
           <View key={item.text} style={styles.instructionRow}>
             <Feather name={item.icon} size={14} color={Colors.textSecondary} />
@@ -190,11 +174,17 @@ const styles = StyleSheet.create({
   grantBtnText: { fontFamily: "Inter_600SemiBold", fontSize: 15, color: Colors.dark },
   statusBar: {
     flexDirection: "row", alignItems: "center", gap: 8,
-    margin: 16, padding: 14,
+    margin: 16, marginBottom: 6, padding: 14,
     backgroundColor: Colors.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.border,
   },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   statusText: { fontFamily: "Inter_500Medium", fontSize: 14, color: Colors.textPrimary },
+  note: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    marginHorizontal: 16, marginBottom: 8, padding: 10,
+    backgroundColor: Colors.primary + "15", borderRadius: 10, borderWidth: 1, borderColor: Colors.primary + "30",
+  },
+  noteText: { fontFamily: "Inter_400Regular", fontSize: 12, color: Colors.primary, flex: 1, lineHeight: 17 },
   pttArea: { flex: 1, alignItems: "center", justifyContent: "center", gap: 24 },
   pttRing: {
     width: 180, height: 180, borderRadius: 90,

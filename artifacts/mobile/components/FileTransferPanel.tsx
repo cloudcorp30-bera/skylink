@@ -151,10 +151,13 @@ export function FileTransferPanel({
       if (result.canceled || !result.assets?.length) return;
       const asset = result.assets[0];
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      const FS = (await import("expo-file-system")) as any;
+      const info = await FS.getInfoAsync(asset.uri, { size: true });
+      const actualSize = info.size ?? asset.size ?? 0;
       await sendFile(
         asset.uri,
         asset.name,
-        asset.size ?? 0,
+        actualSize,
         asset.mimeType ?? "application/octet-stream"
       );
     } catch (err) {
