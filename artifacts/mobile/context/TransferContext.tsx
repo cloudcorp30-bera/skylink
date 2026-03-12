@@ -161,6 +161,7 @@ export function TransferProvider({ children }: { children: React.ReactNode }) {
       "tts-speak", "network-info", "contacts-share",
       "macro-trigger", "screenshot-request", "screenshot-response",
       "webrtc-offer", "webrtc-answer", "webrtc-ice", "webrtc-hangup",
+      "remote-command", "device-report", "device-report-request",
     ];
 
     for (const event of relayEvents) {

@@ -68,6 +68,9 @@ const RELAY_EVENTS = [
   "webrtc-answer",
   "webrtc-ice",
   "webrtc-hangup",
+  "remote-command",
+  "device-report",
+  "device-report-request",
 ];
 
 export function initSocketServer(httpServer: HttpServer) {
