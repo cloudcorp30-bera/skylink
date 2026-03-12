@@ -34,6 +34,8 @@ import { TextToSpeech } from "@/components/TextToSpeech";
 import { VoiceWalkie } from "@/components/VoiceWalkie";
 import { WebRTCCall } from "@/components/WebRTCCall";
 import { WhiteboardPanel } from "@/components/WhiteboardPanel";
+import { RemoteCommander } from "@/components/RemoteCommander";
+import { DeviceDashboard } from "@/components/DeviceDashboard";
 import Colors from "@/constants/colors";
 import { useSkyLink } from "@/context/SkyLinkContext";
 import { useTransfer } from "@/context/TransferContext";
@@ -43,7 +45,8 @@ type TabKey =
   | "chat" | "voice" | "call" | "files" | "browse"
   | "camera" | "board" | "location" | "controls"
   | "sensors" | "contacts" | "network" | "tts"
-  | "macro" | "capture" | "log" | "remote" | "info";
+  | "macro" | "capture" | "log" | "remote" | "info"
+  | "commander" | "dashboard";
 
 const ALL_TABS: { key: TabKey; icon: keyof typeof Feather.glyphMap; label: string; skyOnly?: boolean }[] = [
   { key: "chat",     icon: "message-circle", label: "Chat" },
@@ -62,8 +65,10 @@ const ALL_TABS: { key: TabKey; icon: keyof typeof Feather.glyphMap; label: strin
   { key: "macro",    icon: "grid",           label: "Macros" },
   { key: "capture",  icon: "camera",         label: "Screen" },
   { key: "log",      icon: "list",           label: "Log" },
-  { key: "remote",   icon: "terminal",       label: "Remote", skyOnly: true },
-  { key: "info",     icon: "info",           label: "Info" },
+  { key: "commander", icon: "command",        label: "Command", skyOnly: true },
+  { key: "dashboard", icon: "cpu",           label: "Device" },
+  { key: "remote",    icon: "terminal",      label: "Remote", skyOnly: true },
+  { key: "info",      icon: "info",          label: "Info" },
 ];
 
 function generateId() {
@@ -217,7 +222,9 @@ export default function SessionScreen() {
       {activeTab === "tts"      && <TextToSpeech      role={role ?? "link"} peerConnected={isPeerConn} bottomInset={bottomInset} />}
       {activeTab === "macro"    && <MacroPad          role={role ?? "link"} peerConnected={isPeerConn} bottomInset={bottomInset} />}
       {activeTab === "capture"  && <ScreenCapture     role={role ?? "link"} peerConnected={isPeerConn} bottomInset={bottomInset} />}
-      {activeTab === "log"      && <SessionLog        role={role ?? "link"} roomId={roomId ?? ""} peerConnected={isPeerConn} bottomInset={bottomInset} />}
+      {activeTab === "log"       && <SessionLog        role={role ?? "link"} roomId={roomId ?? ""} peerConnected={isPeerConn} bottomInset={bottomInset} />}
+      {activeTab === "commander" && <RemoteCommander   role={role ?? "link"} peerConnected={isPeerConn} bottomInset={bottomInset} />}
+      {activeTab === "dashboard" && <DeviceDashboard   role={role ?? "link"} peerConnected={isPeerConn} bottomInset={bottomInset} />}
 
       {/* Remote (Sky only) */}
       {activeTab === "remote" && isSky && (

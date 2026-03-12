@@ -138,15 +138,9 @@ export function RemoteCommander({ role, peerConnected, bottomInset = 0 }: Remote
 
   const playAlertSound = useCallback(async () => {
     try {
-      await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
-      const { sound } = await Audio.Sound.createAsync(
-        require("../assets/sounds/alert.mp3"),
-        { shouldPlay: true, volume: 1.0 }
-      ).catch(() => ({ sound: null }));
-      if (sound) {
-        soundRef.current = sound;
-        setTimeout(() => sound.unloadAsync(), 5000);
-      }
+      await Audio.setAudioModeAsync({ playsInSilentModeIOS: true, shouldDuckAndroid: true });
+      // Haptics serve as the alert signal — no bundled audio file needed
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } catch {}
   }, []);
 
