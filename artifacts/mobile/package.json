@@ -56,6 +56,11 @@
     "zod-validation-error": "^3.4.0"
   },
   "dependencies": {
+    "expo-av": "^16.0.8",
+    "expo-battery": "^10.0.8",
+    "expo-brightness": "^14.0.8",
+    "expo-camera": "^17.0.10",
+    "expo-clipboard": "^8.0.8",
     "expo-document-picker": "^14.0.8",
     "expo-media-library": "^18.2.1",
     "expo-sharing": "^14.0.8",
