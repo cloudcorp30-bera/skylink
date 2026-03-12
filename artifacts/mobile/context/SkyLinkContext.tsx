@@ -74,6 +74,10 @@ function generateId(length = 8): string {
   return result;
 }
 
+function uniqueSessionId(): string {
+  return `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export function SkyLinkProvider({ children }: { children: React.ReactNode }) {
   const [role, setRole] = useState<Role | null>(null);
   const [roomId, setRoomId] = useState<string | null>(null);
@@ -125,9 +129,13 @@ export function SkyLinkProvider({ children }: { children: React.ReactNode }) {
       const stored = await AsyncStorage.getItem(SESSIONS_KEY);
       if (stored) {
         const parsed: Session[] = JSON.parse(stored);
-        setSessions(
-          parsed.sort((a, b) => b.lastActivity - a.lastActivity)
-        );
+        const seen = new Set<string>();
+        const deduped = parsed.filter((s) => {
+          if (seen.has(s.id)) return false;
+          seen.add(s.id);
+          return true;
+        });
+        setSessions(deduped.sort((a, b) => b.lastActivity - a.lastActivity));
       }
     } catch (e) {
       console.error("Failed to load sessions", e);
@@ -148,7 +156,7 @@ export function SkyLinkProvider({ children }: { children: React.ReactNode }) {
   const createSkySession = useCallback(async (): Promise<string> => {
     const newRoomId = generateId(6);
     const session: Session = {
-      id: Date.now().toString(),
+      id: uniqueSessionId(),
       roomId: newRoomId,
       role: "sky",
       createdAt: Date.now(),
@@ -178,7 +186,9 @@ export function SkyLinkProvider({ children }: { children: React.ReactNode }) {
       };
       currentSessionRef.current = updatedSession;
       setSessions((prev) => {
-        const updated = [updatedSession, ...prev];
+        const updated = prev.map((s) =>
+          s.id === updatedSession.id ? updatedSession : s
+        );
         saveSessions(updated);
         return updated;
       });
@@ -193,7 +203,7 @@ export function SkyLinkProvider({ children }: { children: React.ReactNode }) {
   const joinAsLink = useCallback(
     async (targetRoomId: string) => {
       const session: Session = {
-        id: Date.now().toString(),
+        id: uniqueSessionId(),
         roomId: targetRoomId,
         role: "link",
         createdAt: Date.now(),
@@ -223,7 +233,9 @@ export function SkyLinkProvider({ children }: { children: React.ReactNode }) {
         };
         currentSessionRef.current = updatedSession;
         setSessions((prev) => {
-          const updated = [updatedSession, ...prev];
+          const updated = prev.map((s) =>
+            s.id === updatedSession.id ? updatedSession : s
+          );
           saveSessions(updated);
           return updated;
         });

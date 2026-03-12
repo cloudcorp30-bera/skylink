@@ -75,7 +75,7 @@ export default function HomeScreen() {
 
       <FlatList
         data={sessions}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item, index) => `${item.id}_${index}`}
         contentContainerStyle={[
           styles.list,
           { paddingBottom: bottomInset + 24 },
