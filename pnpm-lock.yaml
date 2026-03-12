@@ -163,6 +163,9 @@ importers:
 
   artifacts/api-server:
     dependencies:
+      '@types/pg':
+        specifier: ^8.18.0
+        version: 8.18.0
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -184,6 +187,9 @@ importers:
       express:
         specifier: ^5
         version: 5.2.1
+      pg:
+        specifier: ^8.20.0
+        version: 8.20.0
       socket.io:
         specifier: ^4.8.3
         version: 4.8.3

@@ -5,7 +5,7 @@
 pnpm workspace monorepo using TypeScript. SkyLink is a peer-to-peer mobile app for real-time device control and communication.
 
 ### SkyLink Features (18 tabs)
-- **Chat** — Real-time messaging with Socket.IO relay
+- **Chat** — Real-time messaging with native WebSocket relay (stored in PostgreSQL)
 - **Voice** — Push-to-talk walkie-talkie (expo-av, 1.2s audio chunks streamed as base64)
 - **Call** — P2P WebRTC audio/video call (react-native-webrtc, STUN/ICE, no relay for media)
 - **Send** — Chunked file transfer (64KB chunks, base64, progress tracking)
@@ -27,7 +27,15 @@ pnpm workspace monorepo using TypeScript. SkyLink is a peer-to-peer mobile app f
 ### Native Build Config
 - `app.json` has full iOS/Android permissions (camera, microphone, location, contacts, media library)
 - `eas.json` configured with development (simulator+APK), preview, and production profiles
-- metro.config.js blockList covers socket.io, engine.io, css-line-break tmp dirs, all _tmp_N patterns
+- metro.config.js blockList covers css-line-break tmp dirs and all _tmp_N patterns
+- socket.io removed; replaced with native WebSocket (`ws` package on server, React Native built-in WebSocket on client)
+
+### Relay Architecture
+- Server: raw `ws` WebSocket server on `/api/ws` (no socket.io)
+- Client: native WebSocket via `createWsWrapper` with auto-reconnect (3s delay), JSON message protocol
+- Cross-instance relay: PostgreSQL LISTEN/NOTIFY (`skylink_relay` channel) — messages from one server instance reach peers on other instances
+- DB tables: `skylink_sessions` (room join/leave times), `skylink_messages` (chat history)
+- `DATABASE_URL` from Replit runtime-managed secret
 - WebRTC and ViewShot degrade gracefully in Expo Go with informative UI
 
 ## Stack

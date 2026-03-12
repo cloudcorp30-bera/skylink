@@ -15,8 +15,12 @@ if (Number.isNaN(port) || port <= 0) {
 }
 
 const server = http.createServer(app);
-initSocketServer(server);
 
-server.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
+initSocketServer(server).then(() => {
+  server.listen(port, () => {
+    console.log(`Server listening on port ${port}`);
+  });
+}).catch((err) => {
+  console.error("Failed to initialize socket server:", err);
+  process.exit(1);
 });
