@@ -140,10 +140,12 @@ export default function SessionScreen() {
   const visibleTabs = ALL_TABS.filter(t => !t.skyOnly || isSky);
   const isPeerConn = isPeerConnected;
 
-  const statusText = socketConnected
-    ? isPeerConn ? `${peerName ?? (isSky ? "Link" : "Sky")} connected` : "Waiting for peer..."
-    : "Connecting...";
-  const connStatus = socketConnected ? (isPeerConn ? "connected" : "connecting") : "connecting";
+  const statusText = !socketConnected
+    ? "Connecting to server..."
+    : isPeerConn
+      ? `${peerName ?? (isSky ? "Link" : "Sky")} connected`
+      : "Waiting for peer to join...";
+  const connStatus = !socketConnected ? "error" : isPeerConn ? "connected" : "connecting";
 
   return (
     <View style={[styles.root, { paddingTop: topInset }]}>

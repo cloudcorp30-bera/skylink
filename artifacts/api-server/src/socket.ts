@@ -79,6 +79,9 @@ export function initSocketServer(httpServer: HttpServer) {
     maxHttpBufferSize: 50 * 1024 * 1024,
     pingTimeout: 60000,
     pingInterval: 25000,
+    // Replit proxy keeps the /api prefix when forwarding to port 8080,
+    // so socket.io must be mounted at /api/socket.io not /socket.io
+    path: "/api/socket.io",
   });
 
   io.on("connection", (socket) => {

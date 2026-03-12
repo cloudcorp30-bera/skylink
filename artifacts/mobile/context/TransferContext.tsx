@@ -19,6 +19,14 @@ function getServerUrl(): string {
   return "http://localhost:8080";
 }
 
+// Replit proxy forwards /api/* to port 8080 WITHOUT stripping the prefix,
+// so socket.io must be reached at /api/socket.io on the public domain.
+// When falling back to direct localhost, use the default /socket.io path.
+function getSocketPath(): string {
+  const domain = process.env.EXPO_PUBLIC_DOMAIN;
+  return domain ? "/api/socket.io" : "/socket.io";
+}
+
 export type TransferStatus = "pending" | "sending" | "receiving" | "done" | "error";
 
 export interface FileTransfer {
@@ -93,7 +101,14 @@ export function TransferProvider({ children }: { children: React.ReactNode }) {
     if (socketRef.current?.connected) socketRef.current.disconnect();
 
     const url = getServerUrl();
-    const socket = io(url, { transports: ["websocket", "polling"], timeout: 20000 });
+    const socket = io(url, {
+      path: getSocketPath(),
+      // polling first — it's reliable through HTTP proxies; WebSocket upgrades after
+      transports: ["polling", "websocket"],
+      timeout: 20000,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1500,
+    });
     socketRef.current = socket;
 
     socket.on("connect", () => {
