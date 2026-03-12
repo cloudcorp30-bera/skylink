@@ -101,28 +101,49 @@ export function TransferProvider({ children }: { children: React.ReactNode }) {
     if (socketRef.current?.connected) socketRef.current.disconnect();
 
     const url = getServerUrl();
+    const path = getSocketPath();
+    console.log(`[SkyLink] Connecting → ${url}  path=${path}  room=${roomId}  role=${role}`);
+
     const socket = io(url, {
-      path: getSocketPath(),
-      // polling first — it's reliable through HTTP proxies; WebSocket upgrades after
-      transports: ["polling", "websocket"],
-      timeout: 20000,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 1500,
+      path,
+      // Force polling only — WebSocket upgrades are dropped by the Replit proxy
+      // causing immediate disconnect after the initial handshake.
+      transports: ["polling"],
+      timeout: 30000,
+      reconnectionAttempts: 20,
+      reconnectionDelay: 2000,
+      reconnectionDelayMax: 10000,
     });
     socketRef.current = socket;
 
     socket.on("connect", () => {
+      console.log(`[SkyLink] Connected ✓  id=${socket.id}  room=${roomId}`);
       setSocketConnected(true);
       socket.emit("join-room", { roomId, role, name });
     });
 
+    socket.on("connect_error", (err) => {
+      console.warn(`[SkyLink] connect_error: ${err.message}`);
+    });
+
     socket.on("room-joined", ({ peersAlready }: { peersAlready: { socketId: string }[] }) => {
+      console.log(`[SkyLink] room-joined  peersAlready=${peersAlready.length}`);
       if (peersAlready.length > 0) setPeerPresent(true);
     });
 
-    socket.on("peer-joined", () => setPeerPresent(true));
-    socket.on("peer-left", () => setPeerPresent(false));
-    socket.on("disconnect", () => { setSocketConnected(false); setPeerPresent(false); });
+    socket.on("peer-joined", (data: { role: string; name: string }) => {
+      console.log(`[SkyLink] peer-joined  role=${data.role}  name=${data.name}`);
+      setPeerPresent(true);
+    });
+    socket.on("peer-left", () => {
+      console.log("[SkyLink] peer-left");
+      setPeerPresent(false);
+    });
+    socket.on("disconnect", (reason) => {
+      console.warn(`[SkyLink] Disconnected: ${reason}`);
+      setSocketConnected(false);
+      setPeerPresent(false);
+    });
 
     socket.on("chat-message", (msg: { content: string; senderRole: string; timestamp: number }) => {
       msgHandlersRef.current.forEach((h) => h(msg));

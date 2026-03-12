@@ -125,8 +125,8 @@ export function initSocketServer(httpServer: HttpServer) {
       });
     }
 
-    socket.on("disconnect", () => {
-      console.log(`[Socket] Disconnected: ${socket.id}`);
+    socket.on("disconnect", (reason) => {
+      console.log(`[Socket] Disconnected: ${socket.id}  reason=${reason}  room=${currentRoom ?? "none"}`);
       if (currentRoom) {
         rooms.get(currentRoom)?.peers.delete(socket.id);
         socket.to(currentRoom).emit("peer-left", { socketId: socket.id, role: currentRole });
