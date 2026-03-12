@@ -1,8 +1,27 @@
-# Workspace
+# Workspace — SkyLink
 
 ## Overview
 
-pnpm workspace monorepo using TypeScript. Each package manages its own dependencies.
+pnpm workspace monorepo using TypeScript. SkyLink is a peer-to-peer mobile app for real-time device control and communication.
+
+### SkyLink Features (13 tabs)
+- **Chat** — Real-time messaging with Socket.IO relay
+- **Voice** — Push-to-talk walkie-talkie (expo-av, 1.2s audio chunks streamed as base64)
+- **Files** — Chunked file transfer (64KB chunks, base64, progress tracking)
+- **Camera** — Live JPEG frame streaming from device camera
+- **Board** — Collaborative whiteboard with react-native-svg + gesture-handler, undo/clear/multi-color
+- **GPS** — Real-time location sharing with distance calculation
+- **Controls** — Brightness, vibrate, ping, clipboard sync, battery monitor
+- **Sensors** — Accelerometer / gyroscope / magnetometer streaming (expo-sensors)
+- **Contacts** — Share device contacts with peer (expo-contacts)
+- **Network** — IP address, connection type, same-network detection (expo-network)
+- **Speak** — Text-to-speech on remote device with voice settings (expo-speech)
+- **Remote** — Directional control pad (Sky role only)
+- **Info** — Session details and feature overview
+
+### Native Build Config
+- `app.json` has full iOS/Android permissions (camera, microphone, location, contacts, media library)
+- `eas.json` configured with development (simulator+APK), preview, and production profiles
 
 ## Stack
 

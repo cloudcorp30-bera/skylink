@@ -42,6 +42,7 @@ const RELAY_EVENTS = [
   "file-end",
   "file-error",
   "camera-frame",
+  "camera-stop",
   "location-update",
   "location-stop",
   "audio-chunk",
@@ -52,6 +53,13 @@ const RELAY_EVENTS = [
   "brightness-update",
   "typing-indicator",
   "screen-share-frame",
+  "sensor-data",
+  "wb-stroke",
+  "wb-clear",
+  "wb-undo",
+  "tts-speak",
+  "network-info",
+  "contacts-share",
 ];
 
 export function initSocketServer(httpServer: HttpServer) {

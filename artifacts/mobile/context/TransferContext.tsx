@@ -35,7 +35,8 @@ export interface FileTransfer {
   receivedChunks?: Map<number, string>;
 }
 
-type EventHandler = (data: Record<string, unknown>) => void;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type EventHandler = (data: any) => void;
 
 interface TransferContextValue {
   socketConnected: boolean;
@@ -52,7 +53,8 @@ interface TransferContextValue {
     handler: (cmd: { command: string; senderRole: string }) => void
   ) => () => void;
   sendControl: (command: string) => void;
-  emitEvent: (event: string, data: Record<string, unknown>) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  emitEvent: (event: string, data: any) => void;
   onEvent: (event: string, handler: EventHandler) => () => void;
   socket: Socket | null;
 }
@@ -72,7 +74,8 @@ export function TransferProvider({ children }: { children: React.ReactNode }) {
     setTransfers((prev) => prev.map((t) => (t.id === id ? { ...t, ...updates } : t)));
   }, []);
 
-  const emitEvent = useCallback((event: string, data: Record<string, unknown>) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const emitEvent = useCallback((event: string, data: any) => {
     socketRef.current?.emit(event, data);
   }, []);
 
@@ -154,6 +157,8 @@ export function TransferProvider({ children }: { children: React.ReactNode }) {
       "camera-frame", "camera-stop", "location-update", "location-stop",
       "audio-chunk", "clipboard-sync", "device-control", "device-info",
       "battery-update", "brightness-update", "typing-indicator",
+      "sensor-data", "wb-stroke", "wb-clear", "wb-undo",
+      "tts-speak", "network-info", "contacts-share",
     ];
 
     for (const event of relayEvents) {
@@ -223,8 +228,8 @@ export function TransferProvider({ children }: { children: React.ReactNode }) {
         }
       } else {
         for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-          const base64 = await FileSystem.readAsStringAsync(uri, {
-            encoding: FileSystem.EncodingType.Base64,
+          const base64 = await (FileSystem as any).readAsStringAsync(uri, {
+            encoding: 'base64',
             position: chunkIndex * CHUNK_SIZE,
             length: CHUNK_SIZE,
           });
@@ -267,15 +272,16 @@ export function TransferProvider({ children }: { children: React.ReactNode }) {
 
 async function assembleFile(transfer: FileTransfer): Promise<string> {
   if (!transfer.receivedChunks) throw new Error("No chunks");
-  const dir = FileSystem.cacheDirectory + "skylink/";
-  await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+  const FS = FileSystem as any;
+  const dir = FS.cacheDirectory + "skylink/";
+  await FS.makeDirectoryAsync(dir, { intermediates: true });
   const safeFileName = transfer.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
   const outputPath = dir + transfer.id + "_" + safeFileName;
   const sortedChunks = Array.from(transfer.receivedChunks.entries())
     .sort(([a], [b]) => a - b)
     .map(([, data]) => data);
-  await FileSystem.writeAsStringAsync(outputPath, sortedChunks.join(""), {
-    encoding: FileSystem.EncodingType.Base64,
+  await FS.writeAsStringAsync(outputPath, sortedChunks.join(""), {
+    encoding: 'base64',
   });
   return outputPath;
 }

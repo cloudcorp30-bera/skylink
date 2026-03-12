@@ -14,10 +14,33 @@
       "backgroundColor": "#0A0E1A"
     },
     "ios": {
-      "supportsTablet": false
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSCameraUsageDescription": "SkyLink uses your camera to stream live video to your peer.",
+        "NSMicrophoneUsageDescription": "SkyLink uses your microphone for walkie-talkie voice communication.",
+        "NSLocationWhenInUseUsageDescription": "SkyLink shares your GPS location with your peer in real time.",
+        "NSContactsUsageDescription": "SkyLink lets you share your contacts with your connected peer.",
+        "NSPhotoLibraryUsageDescription": "SkyLink saves received files and photos to your library.",
+        "NSPhotoLibraryAddUsageDescription": "SkyLink saves received media to your photo library."
+      }
     },
     "android": {
-      "backgroundColor": "#0A0E1A"
+      "backgroundColor": "#0A0E1A",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.READ_CONTACTS",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.VIBRATE",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.ACCESS_WIFI_STATE"
+      ]
     },
     "web": {
       "favicon": "./assets/images/icon.png"
@@ -30,7 +53,37 @@
         }
       ],
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "SkyLink uses your camera to stream live video to your peer.",
+          "microphonePermission": "SkyLink uses your microphone for walkie-talkie voice.",
+          "recordAudioAndroid": true
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "SkyLink shares your GPS location with your peer."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "SkyLink saves received media to your photo library.",
+          "savePhotosPermission": "SkyLink saves received photos to your library.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "SkyLink lets you share contacts with your peer."
+        }
+      ],
+      "expo-av",
+      "expo-brightness"
     ],
     "experiments": {
       "typedRoutes": true,
