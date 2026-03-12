@@ -14,12 +14,14 @@ const CHUNK_SIZE = 64 * 1024;
 
 function getWsUrl(): string {
   const domain = process.env.EXPO_PUBLIC_DOMAIN;
-  if (domain) {
-    // Always use wss:// for the production Replit domain
-    return `wss://${domain}/api/ws`;
-  }
-  return "ws://localhost:8080/api/ws";
+  const url = domain
+    ? `wss://${domain}/api/ws`
+    : "ws://localhost:8080/api/ws";
+  console.log(`[SkyLink] getWsUrl → ${url}  (EXPO_PUBLIC_DOMAIN="${domain ?? ""}")`);
+  return url;
 }
+
+export const RELAY_WS_URL = getWsUrl();
 
 export type TransferStatus = "pending" | "sending" | "receiving" | "done" | "error";
 
@@ -44,6 +46,8 @@ interface TransferContextValue {
   socketConnected: boolean;
   peerPresent: boolean;
   transfers: FileTransfer[];
+  wsUrl: string;
+  lastError: string | null;
   connectToRoom: (roomId: string, role: "sky" | "link", name: string) => void;
   disconnectFromRoom: () => void;
   sendFile: (uri: string, fileName: string, fileSize: number, mimeType: string) => Promise<void>;
@@ -163,6 +167,7 @@ export function TransferProvider({ children }: { children: React.ReactNode }) {
   const [socketConnected, setSocketConnected] = useState(false);
   const [peerPresent, setPeerPresent] = useState(false);
   const [transfers, setTransfers] = useState<FileTransfer[]>([]);
+  const [lastError, setLastError] = useState<string | null>(null);
 
   const msgHandlersRef = useRef<Set<(msg: { content: string; senderRole: string; timestamp: number }) => void>>(new Set());
   const ctrlHandlersRef = useRef<Set<(cmd: { command: string; senderRole: string }) => void>>(new Set());
@@ -298,15 +303,18 @@ export function TransferProvider({ children }: { children: React.ReactNode }) {
     wsRef.current = createWsWrapper(url, {
       onOpen: () => {
         setSocketConnected(true);
+        setLastError(null);
       },
-      onClose: (code) => {
+      onClose: (code, reason) => {
         if (code !== 1000) {
           setSocketConnected(false);
           setPeerPresent(false);
+          if (code !== 1001) setLastError(`Closed (code ${code}${reason ? ": " + reason : ""})`);
         }
       },
-      onError: () => {
+      onError: (msg) => {
         setSocketConnected(false);
+        setLastError(`Connection error: ${msg}`);
       },
       onMessage: handleMessage,
     }, reconnectRef);
@@ -402,6 +410,7 @@ export function TransferProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(() => ({
     socketConnected, peerPresent, transfers,
+    wsUrl: RELAY_WS_URL, lastError,
     connectToRoom, disconnectFromRoom, sendFile,
     onMessageReceived, sendChatMessage,
     onControlReceived, sendControl,
@@ -409,6 +418,7 @@ export function TransferProvider({ children }: { children: React.ReactNode }) {
     socket: wsRef.current,
   }), [
     socketConnected, peerPresent, transfers,
+    lastError,
     connectToRoom, disconnectFromRoom, sendFile,
     onMessageReceived, sendChatMessage,
     onControlReceived, sendControl,

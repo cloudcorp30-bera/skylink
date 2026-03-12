@@ -80,6 +80,7 @@ export default function SessionScreen() {
   const { role, roomId, peerName, disconnect } = useSkyLink();
   const {
     socketConnected, peerPresent,
+    wsUrl, lastError,
     connectToRoom, disconnectFromRoom,
     sendChatMessage, onMessageReceived,
     sendControl, onControlReceived,
@@ -269,6 +270,28 @@ export default function SessionScreen() {
       {/* Info */}
       {activeTab === "info" && (
         <ScrollView contentContainerStyle={[styles.scrollPad, { paddingBottom: bottomInset + 24 }]} showsVerticalScrollIndicator={false}>
+
+          {/* Connection Diagnostics */}
+          <View style={[styles.infoCard, { borderColor: lastError ? Colors.danger : socketConnected ? Colors.success : Colors.warning, borderWidth: 1 }]}>
+            <Text style={styles.infoCardTitle}>Connection Diagnostics</Text>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Relay URL</Text>
+              <Text style={[styles.infoValue, { flex: 1, flexWrap: "wrap", fontSize: 10 }]}>{wsUrl}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Status</Text>
+              <Text style={[styles.infoValue, { color: socketConnected ? Colors.success : Colors.danger }]}>
+                {socketConnected ? "CONNECTED" : "DISCONNECTED"}
+              </Text>
+            </View>
+            {lastError && (
+              <View style={[styles.infoRow, { marginTop: 4 }]}>
+                <Text style={[styles.infoLabel, { color: Colors.danger }]}>Last Error</Text>
+                <Text style={[styles.infoValue, { color: Colors.danger, flex: 1, flexWrap: "wrap", fontSize: 11 }]}>{lastError}</Text>
+              </View>
+            )}
+          </View>
+
           <View style={styles.infoCard}>
             <Text style={styles.infoCardTitle}>Session Details</Text>
             {[
