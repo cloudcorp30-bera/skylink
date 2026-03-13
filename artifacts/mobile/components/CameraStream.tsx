@@ -13,8 +13,11 @@ import {
 import Colors from "@/constants/colors";
 import { useTransfer } from "@/context/TransferContext";
 
-const FRAME_INTERVAL_MS = 500;
-const JPEG_QUALITY = 0.35;
+// ── Tuning constants ────────────────────────────────────────────────────────
+const TARGET_FPS        = 3;
+const TARGET_INTERVAL   = Math.round(1000 / TARGET_FPS); // 333 ms
+const JPEG_QUALITY      = 0.22;
+const MAX_B64_BYTES     = 110_000; // drop frames over ~80 KB JPEG
 
 interface CameraStreamProps {
   peerConnected: boolean;
@@ -38,66 +41,93 @@ export function CameraStream({
   const [peerStreaming, setPeerStreaming] = useState(false);
   const [viewMode, setViewMode] = useState<"local" | "remote">("remote");
   const [requestSent, setRequestSent] = useState(false);
-  const cameraRef = useRef<CameraView>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const autoStartedRef = useRef(false);
+  const [fps, setFps] = useState(0);
+
+  const cameraRef       = useRef<CameraView>(null);
+  const isStreamingRef  = useRef(false);          // controls the async capture loop
+  const autoStartedRef  = useRef(false);
+  const frameCountRef   = useRef(0);
+  const fpsTimerRef     = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const { emitEvent, onEvent } = useTransfer();
 
   useEffect(() => {
     if (externalFacing) setFacing(externalFacing);
   }, [externalFacing]);
 
+  // ── Receive remote events ─────────────────────────────────────────────────
   useEffect(() => {
-    const unsub = onEvent("camera-frame", (data: { frame: string }) => {
+    const unsub      = onEvent("camera-frame", (data: { frame: string }) => {
       setRemoteFrame(data.frame);
       setPeerStreaming(true);
     });
-    const unsubStop = onEvent("camera-stop", () => {
+    const unsubStop  = onEvent("camera-stop", () => {
       setPeerStreaming(false);
       setRemoteFrame(null);
     });
     const unsubSwitch = onEvent("camera-switch-facing", () => {
-      setFacing((f) => (f === "back" ? "front" : "back"));
+      setFacing(f => (f === "back" ? "front" : "back"));
     });
     return () => { unsub(); unsubStop(); unsubSwitch(); };
   }, [onEvent]);
 
+  // ── Sequential capture loop — never overlaps ──────────────────────────────
   const startStreaming = useCallback(async () => {
-    if (!cameraRef.current || !peerConnected) return;
+    if (!cameraRef.current || !peerConnected || isStreamingRef.current) return;
+    isStreamingRef.current = true;
     setIsStreaming(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    intervalRef.current = setInterval(async () => {
+
+    // FPS counter
+    frameCountRef.current = 0;
+    fpsTimerRef.current = setInterval(() => {
+      setFps(frameCountRef.current);
+      frameCountRef.current = 0;
+    }, 1000);
+
+    while (isStreamingRef.current) {
+      const t0 = Date.now();
       try {
-        if (!cameraRef.current) return;
+        if (!cameraRef.current) break;
         const photo = await cameraRef.current.takePictureAsync({
           quality: JPEG_QUALITY,
           base64: true,
           skipProcessing: true,
           shutterSound: false,
         } as Parameters<CameraView["takePictureAsync"]>[0]);
-        if (photo?.base64) {
-          emitEvent("camera-frame", { frame: photo.base64 });
+
+        if (photo?.base64 && isStreamingRef.current) {
+          if (photo.base64.length <= MAX_B64_BYTES) {
+            emitEvent("camera-frame", { frame: photo.base64 });
+            frameCountRef.current += 1;
+          }
         }
-      } catch {}
-    }, FRAME_INTERVAL_MS);
+      } catch { /* camera not ready or unmounted — just wait */ }
+
+      const elapsed = Date.now() - t0;
+      const wait = Math.max(16, TARGET_INTERVAL - elapsed);
+      await new Promise(r => setTimeout(r, wait));
+    }
   }, [peerConnected, emitEvent]);
 
   const stopStreaming = useCallback(() => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
+    isStreamingRef.current = false;
     setIsStreaming(false);
+    setFps(0);
+    if (fpsTimerRef.current) { clearInterval(fpsTimerRef.current); fpsTimerRef.current = null; }
     emitEvent("camera-stop", {});
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   }, [emitEvent]);
 
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      isStreamingRef.current = false;
+      if (fpsTimerRef.current) clearInterval(fpsTimerRef.current);
     };
   }, []);
 
+  // Auto-start (triggered remotely)
   useEffect(() => {
     if (autoStart && !autoStartedRef.current && permission?.granted && peerConnected) {
       autoStartedRef.current = true;
@@ -123,10 +153,10 @@ export function CameraStream({
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   }, [peerConnected, emitEvent]);
 
+  // ── Permission screens ────────────────────────────────────────────────────
   if (!permission) {
     return <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>;
   }
-
   if (!permission.granted) {
     return (
       <View style={styles.center}>
@@ -140,38 +170,44 @@ export function CameraStream({
     );
   }
 
+  // ── Main UI ───────────────────────────────────────────────────────────────
   return (
     <View style={[styles.container, { paddingBottom: bottomInset }]}>
+      {/* View toggle */}
       <View style={styles.viewToggle}>
-        <Pressable
-          onPress={() => setViewMode("remote")}
-          style={[styles.toggleBtn, viewMode === "remote" && styles.toggleBtnActive]}
-        >
-          <Feather name="eye" size={14} color={viewMode === "remote" ? Colors.primary : Colors.textSecondary} />
-          <Text style={[styles.toggleLabel, viewMode === "remote" && { color: Colors.primary }]}>Peer Camera</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => setViewMode("local")}
-          style={[styles.toggleBtn, viewMode === "local" && styles.toggleBtnActive]}
-        >
-          <Feather name="video" size={14} color={viewMode === "local" ? Colors.primary : Colors.textSecondary} />
-          <Text style={[styles.toggleLabel, viewMode === "local" && { color: Colors.primary }]}>Your Camera</Text>
-        </Pressable>
+        {(["remote", "local"] as const).map(mode => (
+          <Pressable
+            key={mode}
+            onPress={() => setViewMode(mode)}
+            style={[styles.toggleBtn, viewMode === mode && styles.toggleBtnActive]}
+          >
+            <Feather
+              name={mode === "remote" ? "eye" : "video"}
+              size={14}
+              color={viewMode === mode ? Colors.primary : Colors.textSecondary}
+            />
+            <Text style={[styles.toggleLabel, viewMode === mode && { color: Colors.primary }]}>
+              {mode === "remote" ? "Peer Camera" : "Your Camera"}
+            </Text>
+          </Pressable>
+        ))}
       </View>
 
+      {/* Stream box */}
       <View style={styles.streamBox}>
         {viewMode === "remote" ? (
           remoteFrame ? (
             <Image
               source={{ uri: `data:image/jpeg;base64,${remoteFrame}` }}
               style={styles.streamView}
-              resizeMode="contain"
+              resizeMode="cover"
+              fadeDuration={0}
             />
           ) : (
             <View style={styles.noStreamBox}>
               <Feather name="video-off" size={40} color={Colors.textSecondary} />
               <Text style={styles.noStreamText}>
-                {peerConnected ? "Peer is not streaming yet" : "Waiting for peer to connect"}
+                {peerConnected ? "Peer is not streaming" : "Waiting for peer to connect"}
               </Text>
               {peerConnected && (
                 <View style={styles.remoteActions}>
@@ -180,7 +216,11 @@ export function CameraStream({
                     disabled={requestSent}
                     style={[styles.requestBtn, requestSent && styles.requestBtnSent]}
                   >
-                    <Feather name={requestSent ? "clock" : "video"} size={16} color={requestSent ? Colors.textSecondary : Colors.dark} />
+                    <Feather
+                      name={requestSent ? "clock" : "video"}
+                      size={16}
+                      color={requestSent ? Colors.textSecondary : Colors.dark}
+                    />
                     <Text style={[styles.requestBtnText, requestSent && { color: Colors.textSecondary }]}>
                       {requestSent ? "Request sent..." : "Request Stream"}
                     </Text>
@@ -197,6 +237,7 @@ export function CameraStream({
           <CameraView ref={cameraRef} style={styles.streamView} facing={facing} />
         )}
 
+        {/* Live badge + FPS */}
         {peerStreaming && viewMode === "remote" && (
           <>
             <View style={styles.liveBadge}>
@@ -209,9 +250,18 @@ export function CameraStream({
           </>
         )}
 
+        {/* Local streaming status */}
+        {viewMode === "local" && isStreaming && (
+          <View style={styles.streamingBadge}>
+            <View style={styles.streamingDot} />
+            <Text style={styles.streamingText}>{fps} fps</Text>
+          </View>
+        )}
+
+        {/* Flip (local) */}
         {viewMode === "local" && (
           <Pressable
-            onPress={() => setFacing((f) => (f === "back" ? "front" : "back"))}
+            onPress={() => setFacing(f => (f === "back" ? "front" : "back"))}
             style={styles.flipBtn}
           >
             <Feather name="refresh-cw" size={20} color={Colors.textPrimary} />
@@ -219,6 +269,7 @@ export function CameraStream({
         )}
       </View>
 
+      {/* Controls */}
       <View style={styles.controls}>
         {viewMode === "local" && (
           isStreaming ? (
@@ -241,8 +292,10 @@ export function CameraStream({
         )}
         <Text style={styles.hint}>
           {viewMode === "local"
-            ? isStreaming ? "Streaming live to peer" : "Your camera will stream to peer when started"
-            : "Tap 'Request Stream' to ask peer to start their camera"}
+            ? isStreaming
+              ? `Streaming at ${fps} fps — sequential capture, no overlap`
+              : "Your camera will stream to peer when started"
+            : "Tap Request Stream to ask the peer to start their camera"}
         </Text>
       </View>
     </View>
@@ -257,8 +310,8 @@ const styles = StyleSheet.create({
   permBtn: { backgroundColor: Colors.primary, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 14, marginTop: 8 },
   permBtnText: { fontFamily: "Inter_600SemiBold", fontSize: 15, color: Colors.dark },
   viewToggle: {
-    flexDirection: "row", margin: 12, backgroundColor: Colors.surface,
-    borderRadius: 14, borderWidth: 1, borderColor: Colors.border, padding: 4, gap: 4,
+    flexDirection: "row", margin: 12,
+    backgroundColor: Colors.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.border, padding: 4, gap: 4,
   },
   toggleBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 10, borderRadius: 10, gap: 6 },
   toggleBtnActive: { backgroundColor: Colors.primary + "22" },
@@ -291,6 +344,13 @@ const styles = StyleSheet.create({
   },
   liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: "white" },
   liveText: { fontFamily: "Inter_700Bold", fontSize: 11, color: "white", letterSpacing: 1 },
+  streamingBadge: {
+    position: "absolute", top: 12, left: 12,
+    flexDirection: "row", alignItems: "center", gap: 6,
+    backgroundColor: "rgba(0,0,0,0.65)", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8,
+  },
+  streamingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: Colors.danger },
+  streamingText: { fontFamily: "Inter_700Bold", fontSize: 11, color: "white", letterSpacing: 0.8 },
   remoteFlipBtn: {
     position: "absolute", top: 12, right: 12,
     backgroundColor: "rgba(0,0,0,0.55)", width: 36, height: 36, borderRadius: 18,

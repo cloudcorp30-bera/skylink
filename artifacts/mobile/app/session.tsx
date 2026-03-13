@@ -1,23 +1,40 @@
 import { Feather } from "@expo/vector-icons";
 import { Audio } from "expo-av";
+import * as Battery from "expo-battery";
+import * as Brightness from "expo-brightness";
+import { Camera, CameraView } from "expo-camera";
+import type { CameraType } from "expo-camera";
+import * as Clipboard from "expo-clipboard";
+import * as Contacts from "expo-contacts";
+import * as Device from "expo-device";
 import * as FileSystem from "expo-file-system";
-import { LinearGradient } from "expo-linear-gradient";
-import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
+import * as KeepAwake from "expo-keep-awake";
+import { LinearGradient } from "expo-linear-gradient";
+import * as MediaLibrary from "expo-media-library";
+import * as Network from "expo-network";
+import * as Notifications from "expo-notifications";
+import { router } from "expo-router";
+import { Accelerometer, Barometer, Gyroscope, Magnetometer, Pedometer } from "expo-sensors";
+import * as Location from "expo-location";
+import * as Speech from "expo-speech";
+import * as WebBrowser from "expo-web-browser";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   FlatList,
+  Linking,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  Vibration,
   View,
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { CameraType } from "expo-camera";
 import { CameraStream } from "@/components/CameraStream";
 import { ChatInput } from "@/components/ChatInput";
 import { ContactsShare } from "@/components/ContactsShare";
@@ -99,9 +116,21 @@ export default function SessionScreen() {
   const audioSoundRef = useRef<Audio.Sound | null>(null);
   const peerSpeakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Camera remote control state ───────────────────────────────────────────
+  // ── Camera remote control state (Sky navigates + auto-starts Link's camera) ─
   const [cameraAutoStart, setCameraAutoStart] = useState(false);
   const [cameraExternalFacing, setCameraExternalFacing] = useState<CameraType | undefined>(undefined);
+
+  // ── Global Link-side command state (works on any tab) ────────────────────
+  const [linkTorchOn, setLinkTorchOn] = useState(false);
+  const [linkKeepAwakeOn, setLinkKeepAwakeOn] = useState(false);
+  const [linkCameraMode, setLinkCameraMode] = useState<"off" | "front" | "back">("off");
+  const [linkPhotoReady, setLinkPhotoReady] = useState(false);
+  const [linkAlertVisible, setLinkAlertVisible] = useState(false);
+  const [linkAlertContent, setLinkAlertContent] = useState({ title: "", message: "" });
+  const [cmdToast, setCmdToast] = useState<string | null>(null);
+  const linkCameraRef = useRef<CameraView>(null);
+  const pendingPhotoCmdRef = useRef<string>("");
+  const cmdToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const topInset = Platform.OS === "web" ? Math.max(insets.top, 67) : insets.top;
   const bottomInset = Platform.OS === "web" ? Math.max(insets.bottom, 34) : insets.bottom;
@@ -188,6 +217,360 @@ export default function SessionScreen() {
     return () => unsub();
   }, [onEvent]);
 
+  // ── Toast helper ──────────────────────────────────────────────────────────
+  const showCmdToast = useCallback((msg: string) => {
+    setCmdToast(msg);
+    if (cmdToastTimerRef.current) clearTimeout(cmdToastTimerRef.current);
+    cmdToastTimerRef.current = setTimeout(() => setCmdToast(null), 3000);
+  }, []);
+
+  // ── Link camera: take photo when camera is ready ──────────────────────────
+  useEffect(() => {
+    if (!linkPhotoReady || linkCameraMode === "off") return;
+    const cmd = pendingPhotoCmdRef.current;
+    const t = setTimeout(async () => {
+      try {
+        const photo = await linkCameraRef.current?.takePictureAsync({
+          quality: 0.35, base64: true, skipProcessing: true, shutterSound: false,
+        } as Parameters<CameraView["takePictureAsync"]>[0]);
+        if (photo?.base64) {
+          emitEvent("commander-response", { command: cmd, timestamp: Date.now(), data: { size: `${Math.round(photo.base64.length / 1024)}KB` }, imageBase64: photo.base64 });
+          showCmdToast("Photo captured and sent");
+        }
+      } catch {
+        emitEvent("commander-response", { command: cmd, timestamp: Date.now(), data: { error: "Capture failed" } });
+      } finally {
+        setLinkCameraMode("off");
+        setLinkPhotoReady(false);
+        pendingPhotoCmdRef.current = "";
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [linkPhotoReady, linkCameraMode, emitEvent, showCmdToast]);
+
+  // ── GLOBAL Link-side command handler (fires on ANY active tab) ────────────
+  useEffect(() => {
+    if (isSky) return; // Sky does not execute commands
+
+    type CmdPayload = { command: string; value?: string | number | boolean; pattern?: number[]; message?: string };
+
+    const unsub = onEvent("remote-command", async (data: CmdPayload) => {
+      const { command, value, pattern, message } = data;
+
+      const respond = (d: Record<string, string | number | boolean | null>, extra?: object) =>
+        emitEvent("commander-response", { command, timestamp: Date.now(), data: d, ...extra });
+
+      // ── Torch ────────────────────────────────────────────────────────────
+      if (command === "TORCH_ON")  { setLinkTorchOn(true); showCmdToast("Torch on"); }
+      if (command === "TORCH_OFF") { setLinkTorchOn(false); showCmdToast("Torch off"); }
+
+      // ── Keep Awake ───────────────────────────────────────────────────────
+      if (command === "KEEP_AWAKE_ON")  { KeepAwake.activateKeepAwakeAsync("skylink"); setLinkKeepAwakeOn(true); showCmdToast("Keep awake enabled"); }
+      if (command === "KEEP_AWAKE_OFF") { KeepAwake.deactivateKeepAwake("skylink"); setLinkKeepAwakeOn(false); }
+
+      // ── Brightness ───────────────────────────────────────────────────────
+      if (command === "BRIGHTNESS" && typeof value === "number") { try { await Brightness.setBrightnessAsync(value); } catch {} }
+      if (command === "BRIGHTNESS_UP")   { try { const c = await Brightness.getBrightnessAsync(); await Brightness.setBrightnessAsync(Math.min(1, c + 0.2)); } catch {} }
+      if (command === "BRIGHTNESS_DOWN") { try { const c = await Brightness.getBrightnessAsync(); await Brightness.setBrightnessAsync(Math.max(0, c - 0.2)); } catch {} }
+      if (command === "BRIGHTNESS_MAX")  { try { await Brightness.setBrightnessAsync(1); } catch {} }
+      if (command === "BRIGHTNESS_OFF")  { try { await Brightness.setBrightnessAsync(0); } catch {} }
+
+      // ── Haptics ──────────────────────────────────────────────────────────
+      if (command === "HAPTIC_SUCCESS") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      if (command === "HAPTIC_ERROR")   Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      if (command === "HAPTIC_LIGHT")   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      if (command === "HAPTIC_HEAVY")   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+
+      // ── Vibration ────────────────────────────────────────────────────────
+      if (command === "VIBRATE_PATTERN" && pattern) Vibration.vibrate(pattern);
+      if (command === "VIBRATE_STOP")  Vibration.cancel();
+
+      // ── Full-screen alert overlay ─────────────────────────────────────────
+      if (command === "SHOW_ALERT" && message) {
+        setLinkAlertContent({ title: "Message from Sky", message });
+        setLinkAlertVisible(true);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        Vibration.vibrate([0, 200, 100, 200]);
+      }
+
+      // ── Local notification (lock screen) ─────────────────────────────────
+      if (command === "LOCAL_NOTIFICATION") {
+        await Notifications.scheduleNotificationAsync({
+          content: { title: (value as string) || "SkyLink Alert", body: message || "Message from Sky", sound: true },
+          trigger: null,
+        });
+        showCmdToast("Notification sent to lock screen");
+      }
+
+      // ── Emergency ────────────────────────────────────────────────────────
+      if (command === "PHONE_FINDER") {
+        setLinkTorchOn(true);
+        Vibration.vibrate([0,200,100,200,100,200,100,200,100,1000], true);
+        try { await Brightness.setBrightnessAsync(1); } catch {}
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        showCmdToast("Phone Finder — ACTIVE");
+        setTimeout(() => { Vibration.cancel(); setLinkTorchOn(false); }, 10000);
+      }
+      if (command === "STOP_FINDER") { Vibration.cancel(); setLinkTorchOn(false); showCmdToast("Finder stopped"); }
+
+      // ── Visual effects ────────────────────────────────────────────────────
+      if (command === "FLASHBANG") {
+        try { const p = await Brightness.getBrightnessAsync(); await Brightness.setBrightnessAsync(1); showCmdToast("Flashbang!"); setTimeout(async () => { try { await Brightness.setBrightnessAsync(p); } catch {} }, 3000); } catch {}
+      }
+      if (command === "STROBE_TORCH") {
+        showCmdToast("Strobe torch");
+        for (let i = 0; i < 12; i++) setTimeout(() => setLinkTorchOn(i % 2 === 0), i * 150);
+        setTimeout(() => setLinkTorchOn(false), 12 * 150 + 50);
+      }
+      if (command === "SCREEN_PULSE") {
+        try { const p = await Brightness.getBrightnessAsync(); for (let i = 0; i < 6; i++) setTimeout(async () => { try { await Brightness.setBrightnessAsync(i % 2 === 0 ? 1 : 0.05); } catch {} }, i * 300); setTimeout(async () => { try { await Brightness.setBrightnessAsync(p); } catch {} }, 1800); } catch {}
+      }
+
+      // ── Clipboard ────────────────────────────────────────────────────────
+      if (command === "READ_CLIPBOARD") {
+        const text = await Clipboard.getStringAsync();
+        respond({ text: text || "(clipboard empty)" });
+        showCmdToast("Clipboard read and sent");
+      }
+      if (command === "WRITE_CLIPBOARD" && typeof value === "string") {
+        await Clipboard.setStringAsync(value);
+        respond({ written: value.slice(0, 60) });
+        showCmdToast("Clipboard updated");
+      }
+
+      // ── Text-to-Speech ───────────────────────────────────────────────────
+      if (command === "SPEAK_TEXT" && typeof message === "string") {
+        Speech.stop();
+        Speech.speak(message, { rate: 0.9, pitch: 1.0 });
+        showCmdToast(`Speaking: "${message.slice(0, 40)}${message.length > 40 ? "…" : ""}"`);
+      }
+      if (command === "STOP_SPEECH") { Speech.stop(); }
+
+      // ── Open URL ─────────────────────────────────────────────────────────
+      if (command === "OPEN_URL" && typeof value === "string") {
+        try { await WebBrowser.openBrowserAsync(value); showCmdToast(`Opening ${value.slice(0, 30)}…`); } catch {}
+      }
+
+      // ── Phone actions ─────────────────────────────────────────────────────
+      if (command === "DIAL_NUMBER" && typeof value === "string") {
+        const url = `tel:${value}`;
+        const can = await Linking.canOpenURL(url);
+        if (can) { await Linking.openURL(url); respond({ dialing: value }); showCmdToast(`Dialing ${value}`); }
+        else respond({ error: "Cannot open dialer" });
+      }
+      if (command === "COMPOSE_SMS" && typeof value === "string") {
+        const body = encodeURIComponent(message || "");
+        const url = `sms:${value}${body ? `?body=${body}` : ""}`;
+        const can = await Linking.canOpenURL(url);
+        if (can) { await Linking.openURL(url); respond({ to: value }); showCmdToast(`Opening SMS to ${value}`); }
+        else respond({ error: "Cannot open SMS" });
+      }
+      if (command === "COMPOSE_EMAIL") {
+        const to = typeof value === "string" ? value : "";
+        const parts = message?.split("||") ?? [];
+        const url = `mailto:${to}?subject=${encodeURIComponent(parts[0] ?? "")}&body=${encodeURIComponent(parts[1] ?? "")}`;
+        try { await Linking.openURL(url); respond({ to }); showCmdToast(`Opening email to ${to}`); }
+        catch { respond({ error: "Cannot open email" }); }
+      }
+
+      // ── Remote camera capture ─────────────────────────────────────────────
+      if (command === "TAKE_SELFIE") {
+        const { granted } = await Camera.requestCameraPermissionsAsync();
+        if (!granted) { respond({ error: "Camera permission denied" }); return; }
+        pendingPhotoCmdRef.current = command;
+        setLinkCameraMode("front");
+        showCmdToast("Taking selfie…");
+      }
+      if (command === "TAKE_BACK_PHOTO") {
+        const { granted } = await Camera.requestCameraPermissionsAsync();
+        if (!granted) { respond({ error: "Camera permission denied" }); return; }
+        pendingPhotoCmdRef.current = command;
+        setLinkCameraMode("back");
+        showCmdToast("Taking back photo…");
+      }
+
+      // ── Ambient audio recording ───────────────────────────────────────────
+      if (command === "RECORD_AMBIENT_3S") {
+        try {
+          const { granted } = await Audio.requestPermissionsAsync();
+          if (!granted) { respond({ error: "Mic permission denied" }); return; }
+          await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+          showCmdToast("Recording 3s ambient audio…");
+          const rec = new Audio.Recording();
+          await rec.prepareToRecordAsync({
+            android: { extension: ".m4a", outputFormat: 2, audioEncoder: 3, sampleRate: 22050, numberOfChannels: 1, bitRate: 64000 },
+            ios: { extension: ".m4a", outputFormat: "aac", audioQuality: 64, sampleRate: 22050, numberOfChannels: 1, bitRate: 64000, linearPCMBitDepth: 16, linearPCMIsBigEndian: false, linearPCMIsFloat: false },
+            web: {},
+          });
+          await rec.startAsync();
+          await new Promise(r => setTimeout(r, 3000));
+          await rec.stopAndUnloadAsync();
+          const uri = rec.getURI();
+          if (uri) {
+            const base64 = await (FileSystem as any).readAsStringAsync(uri, { encoding: "base64" });
+            respond({ duration: "3s", size: `${Math.round(base64.length / 1024)}KB` }, { audioBase64: base64 });
+            showCmdToast("Ambient audio sent");
+          }
+        } catch { respond({ error: "Recording failed" }); }
+      }
+
+      // ── Media Library ─────────────────────────────────────────────────────
+      if (command === "GET_PHOTO_COUNT") {
+        try {
+          const { granted } = await MediaLibrary.requestPermissionsAsync();
+          if (!granted) { respond({ error: "Permission denied" }); return; }
+          const p = await MediaLibrary.getAssetsAsync({ mediaType: "photo", first: 1 });
+          const v = await MediaLibrary.getAssetsAsync({ mediaType: "video", first: 1 });
+          respond({ photos: p.totalCount, videos: v.totalCount, total: p.totalCount + v.totalCount });
+        } catch { respond({ error: "Media Library unavailable" }); }
+      }
+      if (command === "GET_RECENT_PHOTOS") {
+        try {
+          const { granted } = await MediaLibrary.requestPermissionsAsync();
+          if (!granted) { respond({ error: "Permission denied" }); return; }
+          const result = await MediaLibrary.getAssetsAsync({ mediaType: "photo", first: 8, sortBy: [["creationTime", false]] });
+          respond({ count: result.assets.length, files: result.assets.map(a => `${a.filename} (${new Date(a.creationTime).toLocaleDateString()})`).join(" | ") });
+        } catch { respond({ error: "Media Library unavailable" }); }
+      }
+      if (command === "GET_ALBUMS") {
+        try {
+          const { granted } = await MediaLibrary.requestPermissionsAsync();
+          if (!granted) { respond({ error: "Permission denied" }); return; }
+          const albums = await MediaLibrary.getAlbumsAsync();
+          respond({ count: albums.length, albums: albums.slice(0, 8).map(a => `${a.title}(${a.assetCount})`).join(" · ") });
+        } catch { respond({ error: "Albums unavailable" }); }
+      }
+
+      // ── Contacts ─────────────────────────────────────────────────────────
+      if (command === "GET_CONTACT_COUNT") {
+        try {
+          const { granted } = await Contacts.requestPermissionsAsync();
+          if (!granted) { respond({ error: "Permission denied" }); return; }
+          const r = await Contacts.getContactsAsync({ fields: [] });
+          respond({ totalContacts: r.total ?? r.data.length });
+        } catch { respond({ error: "Contacts unavailable" }); }
+      }
+      if (command === "GET_RECENT_CONTACTS") {
+        try {
+          const { granted } = await Contacts.requestPermissionsAsync();
+          if (!granted) { respond({ error: "Permission denied" }); return; }
+          const r = await Contacts.getContactsAsync({ fields: [Contacts.Fields.Name], pageSize: 10 });
+          respond({ contacts: r.data.slice(0, 10).map(c => c.name ?? "Unknown").join(" · "), shown: Math.min(10, r.data.length) });
+        } catch { respond({ error: "Contacts unavailable" }); }
+      }
+
+      // ── Device Info ───────────────────────────────────────────────────────
+      if (command === "GET_DEVICE_INFO") {
+        respond({ brand: Device.brand ?? "—", model: Device.modelName ?? "—", os: Device.osName ?? "—", osVersion: Device.osVersion ?? "—" });
+      }
+      if (command === "GET_BATTERY") {
+        try {
+          const level = await Battery.getBatteryLevelAsync();
+          const state = await Battery.getBatteryStateAsync();
+          const low = await Battery.isLowPowerModeEnabledAsync();
+          respond({ level: `${Math.round(level * 100)}%`, state: ["Unknown","Discharging","Charging","Full","Unknown"][state] ?? "Unknown", lowPower: low ? "On" : "Off" });
+        } catch { respond({ error: "Battery unavailable" }); }
+      }
+      if (command === "GET_NETWORK") {
+        try {
+          const net = await Network.getNetworkStateAsync();
+          const ip = await Network.getIpAddressAsync();
+          respond({ type: net.type ?? "unknown", ip: ip ?? "—", internet: net.isInternetReachable ? "Yes" : "No" });
+        } catch { respond({ error: "Network unavailable" }); }
+      }
+      if (command === "GET_TIME") {
+        const now = new Date();
+        respond({ time: now.toLocaleTimeString(), date: now.toLocaleDateString(), tz: `UTC${(-now.getTimezoneOffset() / 60) >= 0 ? "+" : ""}${(-now.getTimezoneOffset() / 60).toFixed(0)}` });
+      }
+      if (command === "GET_BRIGHTNESS") {
+        try { respond({ brightness: `${Math.round((await Brightness.getBrightnessAsync()) * 100)}%` }); }
+        catch { respond({ error: "Not available" }); }
+      }
+      if (command === "GET_STORAGE") {
+        try {
+          const FS = FileSystem as any;
+          const free = await FS.getFreeDiskStorageAsync();
+          const total = await FS.getTotalDiskCapacityAsync();
+          const gb = (b: number) => `${(b / 1e9).toFixed(2)} GB`;
+          respond({ free: gb(free), total: gb(total), used: gb(total - free), pct: `${Math.round(((total - free) / total) * 100)}% used` });
+        } catch { respond({ error: "Not available" }); }
+      }
+
+      // ── Location ──────────────────────────────────────────────────────────
+      if (command === "GET_LOCATION") {
+        try {
+          const { granted } = await Location.requestForegroundPermissionsAsync();
+          if (!granted) { respond({ error: "Permission denied" }); return; }
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          const geo = await Location.reverseGeocodeAsync({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
+          const place = geo[0] ? `${geo[0].city ?? ""}, ${geo[0].country ?? ""}`.trim() : "—";
+          respond({ lat: loc.coords.latitude.toFixed(5), lng: loc.coords.longitude.toFixed(5), accuracy: `±${loc.coords.accuracy?.toFixed(0) ?? "?"}m`, place });
+        } catch { respond({ error: "Location unavailable" }); }
+      }
+
+      // ── Sensors ───────────────────────────────────────────────────────────
+      if (command === "GET_ACCELEROMETER") {
+        const sub = Accelerometer.addListener(d => { sub.remove(); respond({ x: d.x.toFixed(3), y: d.y.toFixed(3), z: d.z.toFixed(3), g: Math.sqrt(d.x**2+d.y**2+d.z**2).toFixed(3) }); });
+        Accelerometer.setUpdateInterval(100);
+      }
+      if (command === "GET_GYROSCOPE") {
+        const sub = Gyroscope.addListener(d => { sub.remove(); respond({ x: d.x.toFixed(3), y: d.y.toFixed(3), z: d.z.toFixed(3) }); });
+        Gyroscope.setUpdateInterval(100);
+      }
+      if (command === "GET_MAGNETOMETER") {
+        try {
+          const sub = Magnetometer.addListener(d => {
+            sub.remove();
+            const h = Math.atan2(d.y, d.x) * (180 / Math.PI);
+            respond({ x: d.x.toFixed(1), y: d.y.toFixed(1), z: d.z.toFixed(1), heading: `${h.toFixed(1)}°`, direction: ["N","NE","E","SE","S","SW","W","NW"][Math.round(((h + 360) % 360) / 45) % 8] });
+          });
+          Magnetometer.setUpdateInterval(100);
+        } catch { respond({ error: "Magnetometer unavailable" }); }
+      }
+      if (command === "GET_BAROMETER") {
+        try {
+          const sub = Barometer.addListener(d => {
+            sub.remove();
+            const alt = 44330 * (1 - Math.pow(d.pressure / 1013.25, 0.1903));
+            respond({ pressure: `${d.pressure.toFixed(1)} hPa`, altEstimate: `~${alt.toFixed(0)} m` });
+          });
+          Barometer.setUpdateInterval(100);
+        } catch { respond({ error: "Barometer unavailable" }); }
+      }
+      if (command === "GET_PEDOMETER") {
+        try {
+          const avail = await Pedometer.isAvailableAsync();
+          if (!avail) { respond({ error: "Pedometer not available" }); return; }
+          const now = new Date(); const midnight = new Date(now); midnight.setHours(0,0,0,0);
+          const r = await Pedometer.getStepCountAsync(midnight, now);
+          respond({ stepsToday: r.steps, distance: `~${(r.steps * 0.762).toFixed(0)} m` });
+        } catch { respond({ error: "Step count unavailable" }); }
+      }
+
+      // ── Ping ─────────────────────────────────────────────────────────────
+      if (command === "PING") respond({ pong: "OK", ts: Date.now() });
+
+      // ── Permissions audit ─────────────────────────────────────────────────
+      if (command === "GET_PERMISSIONS") {
+        const results: Record<string, string> = {};
+        try { results.camera = (await Camera.getCameraPermissionsAsync()).status; } catch {}
+        try { results.microphone = (await Audio.getPermissionsAsync()).status; } catch {}
+        try { results.location = (await Location.getForegroundPermissionsAsync()).status; } catch {}
+        try { results.contacts = (await Contacts.getPermissionsAsync()).status; } catch {}
+        try { results.mediaLibrary = (await MediaLibrary.getPermissionsAsync()).status; } catch {}
+        try { results.notifications = (await Notifications.getPermissionsAsync()).status; } catch {}
+        respond(results);
+      }
+    });
+
+    return () => {
+      unsub();
+      Vibration.cancel();
+      KeepAwake.deactivateKeepAwake("skylink");
+      if (cmdToastTimerRef.current) clearTimeout(cmdToastTimerRef.current);
+    };
+  }, [isSky, onEvent, emitEvent, showCmdToast]);
+
   // ── Peer browse-files request: respond with our local SkyLink cache ────────
   useEffect(() => {
     const unsub = onEvent("browse-files-request", async (data: { requestId: string }) => {
@@ -267,6 +650,43 @@ export default function SessionScreen() {
   return (
     <View style={[styles.root, { paddingTop: topInset }]}>
       <LinearGradient colors={["#060C1A", "#0A0E1A", "#060C1A"]} style={StyleSheet.absoluteFill} />
+
+      {/* Hidden camera — serves Link-side torch & remote photo capture */}
+      {!isSky && (linkTorchOn || linkCameraMode !== "off") && (
+        <CameraView
+          ref={linkCameraRef}
+          style={{ width: 1, height: 1, position: "absolute", opacity: 0 }}
+          enableTorch={linkTorchOn}
+          facing={linkCameraMode === "off" ? "back" : linkCameraMode}
+          onCameraReady={() => { if (linkCameraMode !== "off") setLinkPhotoReady(true); }}
+        />
+      )}
+
+      {/* Full-screen alert modal (Link side) */}
+      {!isSky && (
+        <Modal visible={linkAlertVisible} animationType="fade" statusBarTranslucent>
+          <View style={styles.alertOverlay}>
+            <LinearGradient colors={["#1A0008", "#0A0E1A"]} style={StyleSheet.absoluteFill} />
+            <Feather name="alert-circle" size={56} color={Colors.danger} />
+            <Text style={styles.alertTitle}>{linkAlertContent.title}</Text>
+            <Text style={styles.alertMessage}>{linkAlertContent.message}</Text>
+            <Pressable
+              onPress={() => { setLinkAlertVisible(false); Vibration.cancel(); }}
+              style={styles.alertDismiss}
+            >
+              <Text style={styles.alertDismissText}>Dismiss</Text>
+            </Pressable>
+          </View>
+        </Modal>
+      )}
+
+      {/* Command toast — shows executed command on any tab */}
+      {!isSky && cmdToast && (
+        <View style={styles.cmdToast} pointerEvents="none">
+          <Feather name="terminal" size={12} color={Colors.accent} />
+          <Text style={styles.cmdToastText} numberOfLines={1}>{cmdToast}</Text>
+        </View>
+      )}
 
       {/* Nav Bar */}
       <View style={styles.navBar}>
@@ -369,7 +789,16 @@ export default function SessionScreen() {
       {activeTab === "macro"    && <MacroPad          role={role ?? "link"} peerConnected={isPeerConn} bottomInset={bottomInset} />}
       {activeTab === "capture"  && <ScreenCapture     role={role ?? "link"} peerConnected={isPeerConn} bottomInset={bottomInset} />}
       {activeTab === "log"       && <SessionLog        role={role ?? "link"} roomId={roomId ?? ""} peerConnected={isPeerConn} bottomInset={bottomInset} />}
-      {activeTab === "commander" && <RemoteCommander   role={role ?? "link"} peerConnected={isPeerConn} bottomInset={bottomInset} />}
+      {activeTab === "commander" && (
+        <RemoteCommander
+          role={role ?? "link"}
+          peerConnected={isPeerConn}
+          bottomInset={bottomInset}
+          linkTorchOn={linkTorchOn}
+          linkKeepAwakeOn={linkKeepAwakeOn}
+          linkCameraReady={linkCameraMode !== "off"}
+        />
+      )}
       {activeTab === "dashboard" && <DeviceDashboard   role={role ?? "link"} peerConnected={isPeerConn} bottomInset={bottomInset} />}
 
       {/* Remote (Sky only) */}
@@ -472,6 +901,18 @@ export default function SessionScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.dark },
+  alertOverlay: { flex: 1, alignItems: "center", justifyContent: "center", padding: 32, gap: 20 },
+  alertTitle: { fontFamily: "Inter_700Bold", fontSize: 24, color: Colors.textPrimary, textAlign: "center" },
+  alertMessage: { fontFamily: "Inter_400Regular", fontSize: 16, color: Colors.textSecondary, textAlign: "center", lineHeight: 26 },
+  alertDismiss: { backgroundColor: Colors.danger, paddingHorizontal: 40, paddingVertical: 14, borderRadius: 50, marginTop: 12 },
+  alertDismissText: { fontFamily: "Inter_700Bold", fontSize: 16, color: "white" },
+  cmdToast: {
+    position: "absolute", bottom: 90, left: 20, right: 20, zIndex: 999,
+    flexDirection: "row", alignItems: "center", gap: 8,
+    backgroundColor: Colors.surface + "F0", borderWidth: 1, borderColor: Colors.accent + "55",
+    paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14,
+  },
+  cmdToastText: { fontFamily: "Inter_400Regular", fontSize: 13, color: Colors.textSecondary, flex: 1 },
   navBar: {
     flexDirection: "row", alignItems: "center",
     paddingHorizontal: 16, paddingVertical: 10,
