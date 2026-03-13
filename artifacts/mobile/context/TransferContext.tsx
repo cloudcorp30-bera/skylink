@@ -74,7 +74,22 @@ interface WsWrapper {
   send: (event: string, data?: object) => void;
   close: () => void;
   connected: boolean;
+  /** Send an immediate ping — used when the tab becomes visible again. */
+  immediateCheck: () => void;
 }
+
+/**
+ * Web Worker source: runs off the main thread so browser tab-throttling
+ * (which can delay setInterval to 1 minute+) cannot kill our heartbeat.
+ */
+const HEARTBEAT_WORKER_SRC = `
+var t = null;
+self.onmessage = function(e) {
+  if (e.data === 'start') { clearInterval(t); t = setInterval(function(){ self.postMessage('tick'); }, 25000); }
+  else if (e.data === 'stop')  { clearInterval(t); t = null; }
+  else if (e.data === 'now')   { self.postMessage('tick'); }
+};
+`;
 
 function createWsWrapper(
   url: string,
@@ -89,6 +104,7 @@ function createWsWrapper(
   let ws: WebSocket | null = null;
   let alive = false;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
+  let heartbeatWorker: Worker | null = null;
 
   const wrapper: WsWrapper = {
     connected: false,
@@ -99,10 +115,53 @@ function createWsWrapper(
     },
     close() {
       reconnectRef.current = false;
-      clearInterval(pingTimer!);
+      stopHeartbeat();
       ws?.close(1000, "manual close");
     },
+    immediateCheck() {
+      if (!wrapper.connected) return;
+      alive = false;
+      wrapper.send("ping");
+    },
   };
+
+  function stopHeartbeat() {
+    if (heartbeatWorker) {
+      heartbeatWorker.postMessage("stop");
+      heartbeatWorker.terminate();
+      heartbeatWorker = null;
+    }
+    clearInterval(pingTimer!);
+    pingTimer = null;
+  }
+
+  function doPing() {
+    if (!alive) {
+      console.warn("[SkyLink] No pong — reconnecting");
+      ws?.close();
+      return;
+    }
+    alive = false;
+    wrapper.send("ping");
+  }
+
+  function startHeartbeat() {
+    stopHeartbeat();
+    // On web: use a Worker so browser tab-throttling can't kill our timer
+    if (Platform.OS === "web" && typeof Worker !== "undefined") {
+      try {
+        const blob = new Blob([HEARTBEAT_WORKER_SRC], { type: "application/javascript" });
+        const workerUrl = URL.createObjectURL(blob);
+        heartbeatWorker = new Worker(workerUrl);
+        heartbeatWorker.onmessage = () => doPing();
+        heartbeatWorker.postMessage("start");
+        return;
+      } catch (err) {
+        console.warn("[SkyLink] Worker unavailable, falling back to setInterval", err);
+      }
+    }
+    pingTimer = setInterval(doPing, 25000);
+  }
 
   function connect() {
     console.log(`[SkyLink] WebSocket connecting → ${url}`);
@@ -113,17 +172,7 @@ function createWsWrapper(
       alive = true;
       wrapper.connected = true;
       handlers.onOpen();
-
-      // Client-side keepalive ping every 15s
-      pingTimer = setInterval(() => {
-        if (!alive) {
-          console.warn("[SkyLink] No pong — reconnecting");
-          ws?.close();
-          return;
-        }
-        alive = false;
-        wrapper.send("ping");
-      }, 15000);
+      startHeartbeat();
     };
 
     ws.onmessage = (e) => {
@@ -134,7 +183,7 @@ function createWsWrapper(
     };
 
     ws.onclose = (e) => {
-      clearInterval(pingTimer!);
+      stopHeartbeat();
       wrapper.connected = false;
       console.warn(`[SkyLink] WebSocket closed  code=${e.code}  reason=${e.reason || "—"}`);
       handlers.onClose(e.code, e.reason);
@@ -400,6 +449,45 @@ export function TransferProvider({ children }: { children: React.ReactNode }) {
       updateTransfer(transferId, { status: "error", errorMessage: message });
     }
   }, [emit, updateTransfer]);
+
+  // ── Web-only: keep connection alive across background tabs ─────────────────
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof document === "undefined") return;
+
+    // Wake Lock API — prevents mobile browsers from suspending the tab
+    let wakeLock: { release: () => Promise<void> } | null = null;
+    async function acquireWakeLock() {
+      try {
+        if ("wakeLock" in navigator) {
+          wakeLock = await (navigator as unknown as { wakeLock: { request: (t: string) => Promise<{ release: () => Promise<void> }> } }).wakeLock.request("screen");
+        }
+      } catch { /* not supported or permission denied */ }
+    }
+
+    function onVisibilityChange() {
+      if (document.visibilityState !== "visible") return;
+
+      // Tab just came back into focus
+      acquireWakeLock();
+
+      if (wsRef.current?.connected) {
+        // Connection looks open — send an immediate ping to confirm it's live
+        wsRef.current.immediateCheck();
+      } else if (reconnectRef.current && pendingJoin.current) {
+        // Connection was dropped while hidden — reconnect immediately (no 3s wait)
+        const { roomId, role, name } = pendingJoin.current;
+        connectToRoom(roomId, role as "sky" | "link", name);
+      }
+    }
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    acquireWakeLock();
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      wakeLock?.release().catch(() => {});
+    };
+  }, [connectToRoom]);
 
   useEffect(() => {
     return () => {
