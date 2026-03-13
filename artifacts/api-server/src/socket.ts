@@ -176,7 +176,9 @@ export async function initSocketServer(httpServer: HttpServer) {
   const wss = new WebSocketServer({ server: httpServer, path: "/api/ws" });
   console.log(`[WS] Ready on /api/ws  instance=${INSTANCE_ID}  db=${pool ? "yes" : "no"}`);
 
-  // Heartbeat — detect and terminate unresponsive connections
+  // Heartbeat — detect and terminate unresponsive connections.
+  // 60 s interval gives background browser tabs enough time to respond;
+  // browsers can throttle timers heavily when a tab is not visible.
   const heartbeat = setInterval(() => {
     for (const [ws, info] of peers) {
       if (!info.alive) {
@@ -188,7 +190,7 @@ export async function initSocketServer(httpServer: HttpServer) {
       info.alive = false;
       try { ws.ping(); } catch {}
     }
-  }, 20000);
+  }, 60000);
 
   wss.on("close", () => clearInterval(heartbeat));
 
@@ -209,8 +211,11 @@ export async function initSocketServer(httpServer: HttpServer) {
         return;
       }
 
-      // Client keepalive ping
+      // Client keepalive ping — also marks the connection alive so the
+      // server heartbeat doesn't terminate background-tab connections.
       if (msg.event === "ping") {
+        const info = peers.get(ws);
+        if (info) info.alive = true;
         ws.send(JSON.stringify({ event: "pong" }));
         return;
       }
